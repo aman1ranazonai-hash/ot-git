@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kronos Trading Bot — Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <!-- ======================= NAVBAR ======================= -->
+  <nav class="navbar">
+    <div class="nav-left">
+      <span class="logo">⚡</span>
+      <span class="title">Kronos Trading Bot</span>
+      <span id="mode-badge" class="badge badge-demo">DEMO</span>
+    </div>
+    <div class="nav-right">
+      <span id="nav-pnl" class="nav-pnl">+$0</span>
+      <span id="last-update" class="last-update">—</span>
+      <a href="/settings" class="settings-link" title="Settings">⚙️</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <!-- ======================= STATS GRID ======================= -->
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Current Market</div>
+        <div class="stat-value" id="stat-market">—</div>
+        <div class="stat-sub" id="stat-market-window"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Kronos Signal</div>
+        <div class="stat-value" id="stat-signal">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Confidence</div>
+        <div class="stat-value" id="stat-confidence">—</div>
+        <div class="stat-sub" id="stat-threshold">trade if &gt; 70%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Daily P&amp;L</div>
+        <div class="stat-value" id="stat-pnl">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Trades Today</div>
+        <div class="stat-value" id="stat-trades">—</div>
+        <div class="stat-sub" id="stat-wl">W/L</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value" id="stat-winrate">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Next Switch</div>
+        <div class="stat-value" id="stat-next-switch">—</div>
+        <div class="stat-sub" id="stat-countdown"></div>
+      </div>
+    </section>
+
+    <!-- ======================= CONTROL PANEL ======================= -->
+    <section class="panel">
+      <h2>Control Panel</h2>
+      <div class="controls">
+        <button id="btn-start" class="btn btn-success">▶ START</button>
+        <button id="btn-stop" class="btn btn-danger">■ STOP</button>
+        <button id="btn-demo" class="btn btn-secondary">DEMO</button>
+        <button id="btn-real" class="btn btn-secondary">REAL</button>
+        <button id="btn-forcestop" class="btn btn-danger-outline">⛔ FORCE STOP</button>
+      </div>
+
+      <div id="pause-banner" class="pause-banner hidden">
+        ⏸️ <b id="pause-banner-status">PAUSED</b> — <span id="pause-banner-reason"></span>
+        Click ▶ START to approve resumption.
+      </div>
+
+      <div class="controls-row">
+        <div class="toggle-wrap">
+          <label class="switch">
+            <input type="checkbox" id="target-toggle">
+            <span class="slider"></span>
+            <span class="switch-label">Daily Target <b id="target-state">OFF</b></span>
+          </label>
+        </div>
+        <div class="input-group">
+          <input type="number" id="target-amount" placeholder="Target $ amount" min="1" step="1">
+          <button id="btn-set-target" class="btn btn-secondary">Set Target</button>
+        </div>
+        <div class="input-group">
+          <input type="text" id="token-input" placeholder="New Olymp token">
+          <button id="btn-set-token" class="btn btn-secondary">Update Token</button>
+        </div>
+      </div>
+      <div id="control-msg" class="action-msg"></div>
+    </section>
+
+    <div class="two-col">
+      <!-- ======================= MARKET SCHEDULE ======================= -->
+      <section class="panel">
+        <h2>Market Schedule <span class="tz-note">IST</span></h2>
+        <div id="market-list" class="market-list"></div>
+        <div class="countdown-box">
+          <span class="countdown-label">Next market in</span>
+          <span id="market-countdown" class="countdown-value">—</span>
+        </div>
+      </section>
+
+      <!-- ======================= TRADE HISTORY ======================= -->
+      <section class="panel">
+        <h2>Trade History <span class="sub-note">last 20</span></h2>
+        <div class="table-wrap">
+          <table class="trades-table">
+            <thead>
+              <tr>
+                <th>Time</th><th>Symbol</th><th>Signal</th><th>Conf.</th>
+                <th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="trades-body">
+              <tr><td colspan="8" class="empty-row">No trades recorded yet</td></tr>
+            </tbody>
+          </table>
+          <div id="trades-note" class="sub-note">From Supabase (falls back to bot log if DB is down)</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ======================= LIVE LOG ======================= -->
+    <section class="panel">
+      <h2>Live Log <span class="sub-note">last 100 lines · auto-refresh 2s</span></h2>
+      <div id="log-box" class="log-box"></div>
+    </section>
+  </main>
+
+  <!-- ======================= PIN MODAL ======================= -->
+  <div id="pin-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3 id="pin-title">🔐 Enter PIN</h3>
+      <p id="pin-desc" class="pin-desc"></p>
+      <input type="password" id="pin-input" inputmode="numeric" placeholder="PIN"
+             maxlength="8" autocomplete="off">
+      <div class="modal-actions">
+        <button id="pin-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="pin-submit" class="btn btn-primary" disabled>Confirm</button>
+      </div>
+      <div id="pin-error" class="pin-error"></div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

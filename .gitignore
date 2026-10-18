@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Sensitive environment variables
+.env
+.env.local
+
+# Local logs and temporary files
+logs/
+*.log
+*.sqlite3
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Old repos
+TradingAgents-main/

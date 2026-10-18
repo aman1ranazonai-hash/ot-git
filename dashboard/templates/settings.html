@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings — Kronos Trading Bot</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-left">
+      <span class="logo">⚡</span>
+      <span class="title">Kronos Trading Bot — Settings</span>
+    </div>
+    <div class="nav-right">
+      <a href="/" class="settings-link" title="Back to dashboard">← Dashboard</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="panel">
+      <h2>Current Settings <span class="sub-note">from .env</span></h2>
+      <div class="table-wrap">
+        <table class="trades-table">
+          <thead>
+            <tr><th>Setting</th><th>Key</th><th>Value</th></tr>
+          </thead>
+          <tbody id="readonly-body">
+            <tr><td colspan="3" class="empty-row">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Edit Settings</h2>
+      <p class="sub-note">Changes are saved to the shared <code>.env</code>. bot.py and telegram_bot.py pick them up automatically — no restart needed. PIN required.</p>
+      <div id="editable-list" class="editable-list"></div>
+      <div class="modal-actions">
+        <button id="save-settings" class="btn btn-primary" disabled>💾 Save Changes</button>
+      </div>
+      <div id="settings-msg" class="action-msg"></div>
+    </section>
+  </main>
+
+  <!-- PIN modal -->
+  <div id="pin-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>🔐 Enter PIN</h3>
+      <p class="pin-desc">PIN required to save settings changes</p>
+      <input type="password" id="pin-input" inputmode="numeric" placeholder="PIN" maxlength="8" autocomplete="off">
+      <div class="modal-actions">
+        <button id="pin-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="pin-submit" class="btn btn-primary" disabled>Confirm</button>
+      </div>
+      <div id="pin-error" class="pin-error"></div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

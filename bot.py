@@ -74,7 +74,7 @@ DEFAULT_PAUSE_CONSECUTIVE_LOSSES = 3  # how many consecutive losses trigger a pa
 
 MAX_API_RETRIES = 3                  # retries for timeouts / connection errors
 RETRY_DELAY = 5                      # seconds between retries (multiplied by attempt)
-API_TIMEOUT = 30                     # seconds per HTTP request
+API_TIMEOUT = int(os.getenv("KRONOS_TIMEOUT", "60"))  # seconds per HTTP request (allows Modal cold-start)
 OLYMP_CONNECT_TIMEOUT = 15           # seconds for WS connect / candle fetch
 
 # --- Candle pre-filter (skips Kronos call on flat/low-volatility markets) ----

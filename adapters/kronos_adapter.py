@@ -44,9 +44,9 @@ DEFAULT_KRONOS_API = (
 
 def _timeout():
     try:
-        return float(os.getenv("KRONOS_TIMEOUT", "30"))
+        return float(os.getenv("KRONOS_TIMEOUT", "60"))
     except (TypeError, ValueError):
-        return 30.0
+        return 60.0
 
 
 def _base_url():

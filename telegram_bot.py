@@ -237,7 +237,15 @@ class KronosTelegramBot:
 
     def _chat_id(self):
         load_dotenv(ENV_FILE, override=True)
-        return os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        cid = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        if not cid:
+            try:
+                db_cid = get_setting("TELEGRAM_CHAT_ID")
+                if db_cid:
+                    cid = str(db_cid).strip()
+            except Exception:
+                pass
+        return cid
 
     def _log_command(self, update, command, ok=True, note=None):
         """Log every command + PIN attempt to stdout + DB (audit trail)."""
@@ -1126,7 +1134,14 @@ def main():
     load_dotenv(ENV_FILE)
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
-        print("ERROR: TELEGRAM_BOT_TOKEN missing in .env — cannot start Telegram bot.")
+        try:
+            db_token = get_setting("TELEGRAM_BOT_TOKEN")
+            if db_token:
+                token = str(db_token).strip()
+        except Exception:
+            pass
+    if not token:
+        print("ERROR: TELEGRAM_BOT_TOKEN missing in .env and database — cannot start Telegram bot.")
         sys.exit(1)
 
     print("=" * 60)

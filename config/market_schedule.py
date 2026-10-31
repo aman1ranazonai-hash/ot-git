@@ -49,12 +49,27 @@ MARKET_SCHEDULE = [
     }
 ]
 
+import os
+
 def is_trading_day():
     """
-    Single source of truth for the weekday filter (Mon-Fri only).
-    Saturday (5) and Sunday (6) are skipped — low liquidity and noise.
-    bot.py imports this so bot logic and the schedule never disagree.
+    Checks if today is a valid trading day.
+    If ALLOW_WEEKEND_TRADING is True (default for OTC markets), trading is active all 7 days.
+    If False, skips Saturday and Sunday.
     """
+    val = os.getenv("ALLOW_WEEKEND_TRADING")
+    if val is None:
+        try:
+            from database.db import get_setting
+            val = get_setting("ALLOW_WEEKEND_TRADING")
+        except Exception:
+            pass
+    if val is not None:
+        allow_weekend = str(val).strip().lower() in ("1", "true", "yes", "on")
+    else:
+        allow_weekend = True  # Default to True for OTC 24/7 markets
+    if allow_weekend:
+        return True
     return datetime.now(IST).weekday() not in (5, 6)
 
 def get_current_market():

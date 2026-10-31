@@ -489,6 +489,24 @@ def get_status():
     target_enabled = _env_bool("DAILY_TARGET_ENABLED", False)
     daily_target = _env_float("DAILY_TARGET", 100.0)
 
+    # Override with DB values (persistent across gunicorn workers + container restarts)
+    if db_ok:
+        try:
+            db_demo = get_setting("DEMO_MODE")
+            if db_demo is not None:
+                mode = "DEMO" if db_demo.strip().lower() in ("1", "true", "yes", "on") else "REAL"
+            db_stop = get_setting("FORCE_STOP")
+            if db_stop is not None:
+                force_stop = db_stop.strip().lower() in ("1", "true", "yes", "on")
+            db_target_en = get_setting("DAILY_TARGET_ENABLED")
+            if db_target_en is not None:
+                target_enabled = db_target_en.strip().lower() in ("1", "true", "yes", "on")
+            db_target_val = get_setting("DAILY_TARGET")
+            if db_target_val:
+                daily_target = float(db_target_val)
+        except Exception:  # noqa: BLE001
+            pass  # already have env fallbacks above
+
     # Pause state lives in the DB settings table (source of truth for the bot)
     try:
         status_info = get_bot_status()

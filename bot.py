@@ -66,6 +66,12 @@ DEFAULT_LOOP_INTERVAL = 300          # 5 minutes between cycles
 DEFAULT_TRADE_AMOUNT = 70.0          # Olymp Trade app amount (fallback)
 DEFAULT_DAILY_TARGET = 100.0
 
+# --- Pause-after-loss control (configurable) ---
+# PAUSE_AFTER_LOSS=false  → never pause after a loss (default, keeps trading)
+# PAUSE_AFTER_LOSS=true   → pause after PAUSE_AFTER_CONSECUTIVE_LOSSES consecutive losses
+DEFAULT_PAUSE_AFTER_LOSS = False
+DEFAULT_PAUSE_CONSECUTIVE_LOSSES = 3  # how many consecutive losses trigger a pause
+
 MAX_API_RETRIES = 3                  # retries for timeouts / connection errors
 RETRY_DELAY = 5                      # seconds between retries (multiplied by attempt)
 API_TIMEOUT = 30                     # seconds per HTTP request
@@ -104,8 +110,8 @@ def send_telegram_alert(message):
     if "Weekend pause" in message:
         _last_weekend_alert_date = today
 
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or (get_setting("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip() or (get_setting("TELEGRAM_CHAT_ID") or "").strip()
     if token and chat_id:
         try:
             requests.post(
@@ -176,11 +182,23 @@ class KronosBot:
         # Kronos-only decisioning: fixed 0.75 threshold
         self.optimal_threshold = KRONOS_CONFIDENCE_THRESHOLD
 
-        # Pause-after-loss state (persisted in DB settings)
+        # Consecutive loss counter (for optional pause-after-loss)
+        self._consecutive_losses = 0
+        self._pause_after_loss = _env_bool("PAUSE_AFTER_LOSS", DEFAULT_PAUSE_AFTER_LOSS)
+        self._pause_consecutive_limit = int(_env_float("PAUSE_AFTER_CONSECUTIVE_LOSSES",
+                                                        DEFAULT_PAUSE_CONSECUTIVE_LOSSES))
+
+        # Pause state from DB (only apply PAUSED_MANUAL, not PAUSED_AFTER_LOSS on startup)
         initial_status_info = get_bot_status()
-        self.bot_status = initial_status_info.get("status") or "RUNNING"
-        self.last_loss_reason = initial_status_info.get("last_loss")
-        self.pause_timestamp = initial_status_info.get("paused_at")
+        raw_status = initial_status_info.get("status") or "RUNNING"
+        # Auto-clear stale PAUSED_AFTER_LOSS on startup so bot doesn't stay frozen
+        if raw_status == "PAUSED_AFTER_LOSS":
+            print("[STARTUP] Clearing stale PAUSED_AFTER_LOSS — bot will resume trading.")
+            set_bot_status("RUNNING", reason=None)
+            raw_status = "RUNNING"
+        self.bot_status = raw_status
+        self.last_loss_reason = initial_status_info.get("last_loss") if raw_status != "RUNNING" else None
+        self.pause_timestamp = initial_status_info.get("paused_at") if raw_status != "RUNNING" else None
 
         # --- Shared database (Supabase via database/db.py) -------------------
         # All DB access goes through the module-level helpers, which never
@@ -612,23 +630,39 @@ class KronosBot:
                        {"pnl": round(pnl, 2), "exit_price": exit_price,
                         "daily_pnl": round(self.daily_pnl, 2), "trade_id": trade_id})
 
-        # --- PAUSE AFTER LOSS ---
+        # --- LOSS TRACKING & OPTIONAL PAUSE ---
         if pnl < 0:
+            self._consecutive_losses = getattr(self, "_consecutive_losses", 0) + 1
             loss_reason = f"Trade {trade_id or ''} closed with loss of {self.format_pnl(pnl)}"
-            self.bot_status = "PAUSED_AFTER_LOSS"
-            self.last_loss_reason = loss_reason
-            self.pause_timestamp = datetime.now(IST).isoformat()
-            set_bot_status("PAUSED_AFTER_LOSS", reason=loss_reason)
-            self.log(symbol, "Trade loss detected. Bot paused. Awaiting manual approval.")
-            self.log_event("LOSS_DETECTED", "Trade loss detected. Bot paused. Awaiting manual approval.",
-                           {"trade_id": trade_id, "pnl": pnl, "reason": loss_reason})
-            insert_alert(
-                alert_type="LOSS_DETECTED",
-                message=f"Trade loss detected ({self.format_pnl(pnl)} on {symbol or 'market'}). Bot paused. Awaiting manual approval.",
-                bot_status="PAUSED_AFTER_LOSS",
-                trade_id=trade_id,
-            )
+            self.log_event("LOSS_DETECTED", f"Loss #{self._consecutive_losses}: {self.format_pnl(pnl)}",
+                           {"trade_id": trade_id, "pnl": pnl, "consecutive": self._consecutive_losses})
+
+            # Only pause if PAUSE_AFTER_LOSS=true AND consecutive loss limit reached
+            pause_enabled = _env_bool("PAUSE_AFTER_LOSS", getattr(self, "_pause_after_loss", False))
+            limit = int(_env_float("PAUSE_AFTER_CONSECUTIVE_LOSSES",
+                                   getattr(self, "_pause_consecutive_limit", DEFAULT_PAUSE_CONSECUTIVE_LOSSES)))
+            if pause_enabled and self._consecutive_losses >= limit:
+                self.bot_status = "PAUSED_AFTER_LOSS"
+                self.last_loss_reason = loss_reason
+                self.pause_timestamp = datetime.now(IST).isoformat()
+                set_bot_status("PAUSED_AFTER_LOSS", reason=loss_reason)
+                self.log(symbol, f"Bot PAUSED after {self._consecutive_losses} consecutive losses. Awaiting manual approval.")
+                insert_alert(
+                    alert_type="LOSS_DETECTED",
+                    message=f"{self._consecutive_losses} consecutive losses ({self.format_pnl(pnl)} on {symbol or 'market'}). Bot paused.",
+                    bot_status="PAUSED_AFTER_LOSS",
+                    trade_id=trade_id,
+                )
+            else:
+                self.log(symbol, f"Loss #{self._consecutive_losses}: {self.format_pnl(pnl)} — continuing to next cycle" +
+                         (f" (pause after {limit} consecutive losses)" if pause_enabled else " (auto-pause disabled)"))
+                # Send Telegram alert about loss but keep running
+                try:
+                    send_telegram_alert(f"⚠️ Loss #{self._consecutive_losses}: {self.format_pnl(pnl)} on {symbol or 'market'}. Daily P&L: {self.format_pnl(self.daily_pnl)}")
+                except Exception:  # noqa: BLE001
+                    pass
         else:
+            self._consecutive_losses = 0  # reset on win
             self.log(symbol, f"Trade ended in profit/breakeven ({self.format_pnl(pnl)}). Continuing to next cycle.")
 
         self._open_trade_id = None
@@ -763,12 +797,17 @@ class KronosBot:
         status_info = get_bot_status()
         current_status = status_info.get("status") or getattr(self, "bot_status", "RUNNING")
         if current_status == "PAUSED_AFTER_LOSS":
-            self.bot_status = "PAUSED_AFTER_LOSS"
-            self.current_signal = "PAUSED_AFTER_LOSS"
-            self.last_loss_reason = status_info.get("last_loss") or getattr(self, "last_loss_reason", "trade loss detected")
-            self.log(None, f"Bot is PAUSED_AFTER_LOSS ({self.last_loss_reason}). Skipping cycle. Awaiting manual approval.")
-            self.update_status(market)
-            return
+            pause_enabled = _env_bool("PAUSE_AFTER_LOSS", getattr(self, "_pause_after_loss", False))
+            if not pause_enabled:
+                set_bot_status("RUNNING", reason=None)
+                self.bot_status = "RUNNING"
+            else:
+                self.bot_status = "PAUSED_AFTER_LOSS"
+                self.current_signal = "PAUSED_AFTER_LOSS"
+                self.last_loss_reason = status_info.get("last_loss") or getattr(self, "last_loss_reason", "trade loss detected")
+                self.log(None, f"Bot is PAUSED_AFTER_LOSS ({self.last_loss_reason}). Skipping cycle. Awaiting manual approval.")
+                self.update_status(market)
+                return
         elif current_status == "PAUSED_MANUAL":
             self.bot_status = "PAUSED_MANUAL"
             self.current_signal = "PAUSED_MANUAL"

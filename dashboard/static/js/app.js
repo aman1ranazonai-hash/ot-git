@@ -191,6 +191,18 @@ async function refreshStatus() {
     $("btn-start").disabled = !!s.running && !s.force_stop && !s.paused;
     $("btn-stop").disabled = !s.running && !s.force_stop ? false : !!s.force_stop && !s.running;
 
+    // reflect daily target status & amount
+    const targetToggle = $("target-toggle");
+    const targetState = $("target-state");
+    const targetAmount = $("target-amount");
+    if (targetToggle && targetState) {
+      targetToggle.checked = !!s.target_enabled;
+      targetState.textContent = s.target_enabled ? "ON" : "OFF";
+    }
+    if (targetAmount && s.daily_target != null && document.activeElement !== targetAmount) {
+      targetAmount.value = s.daily_target;
+    }
+
     // pause banner (PAUSED_AFTER_LOSS / PAUSED_MANUAL)
     const banner = $("pause-banner");
     if (banner) {
@@ -491,7 +503,30 @@ function initDashboard() {
   });
 
   $("target-toggle").addEventListener("change", () => {
-    setText("target-state", $("target-toggle").checked ? "ON" : "OFF");
+    const isChecked = $("target-toggle").checked;
+    setText("target-state", isChecked ? "ON" : "OFF");
+    const amount = parseFloat($("target-amount").value) || 100;
+    pinModal.open(`${isChecked ? "Enable" : "Disable"} daily target`, async (pin) => {
+      const { ok, data } = await apiPost("/api/command",
+        { command: "set_target", amount, enabled: isChecked, pin });
+      if (ok && data.success) {
+        pinModal.close();
+        showMessage($("control-msg"), isChecked ? `✅ Target enabled ($${amount})` : "✅ Target disabled", true);
+        refreshStatus();
+      } else if (data.message && data.message.includes("Wrong PIN")) {
+        pinModal.error.textContent = data.message;
+        $("target-toggle").checked = !isChecked;
+        setText("target-state", !isChecked ? "ON" : "OFF");
+      } else {
+        pinModal.close();
+        $("target-toggle").checked = !isChecked;
+        setText("target-state", !isChecked ? "ON" : "OFF");
+        showMessage($("control-msg"), data.message || "⚠️ Error", false);
+      }
+    }, () => {
+      $("target-toggle").checked = !isChecked;
+      setText("target-state", !isChecked ? "ON" : "OFF");
+    });
   });
 
   // initial load + intervals (spec: stats 5s, trades 10s, logs 2s)

@@ -5,13 +5,13 @@
 # dashboard with the matching start command below.
 #
 #  Service 1 — Dashboard  (web, set Start Command):
-web: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 dashboard.app:app
+web: bash start.sh
 #
 #  Service 2 — Trading Bot  (worker, set Start Command):
 worker: python3 bot.py
 #
 #  Service 3 — Telegram Bot  (worker, set Start Command):
-#  python3 telegram_bot.py
+telegram: python3 telegram_bot.py
 #
 #  Service 4 — FastAPI Control Server  (web, set Start Command):
 #  uvicorn server:app --host 0.0.0.0 --port $PORT

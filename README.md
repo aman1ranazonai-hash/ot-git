@@ -10,6 +10,45 @@ The system includes:
 
 ---
 
+## Project Structure
+
+```
+final ot/
+├── frontend/              ← 📖 Guide: browser-facing HTML/CSS/JS  →  see frontend/README.md
+├── backend/               ← 📖 Guide: all Python server-side code  →  see backend/README.md
+│
+├── bot.py                 ← Trading loop (main worker)
+├── server.py              ← FastAPI control API
+├── telegram_bot.py        ← Telegram bot
+│
+├── dashboard/             ← Flask web dashboard
+│   ├── app.py             ←   Dashboard API + page routes
+│   ├── templates/         ←   HTML pages (index, settings)
+│   └── static/            ←   CSS + JS assets
+│
+├── adapters/              ← Integration adapters
+│   ├── olymp_adapter.py   ←   Olymp Trade WebSocket
+│   ├── kronos_adapter.py  ←   Kronos AI API
+│   └── risk_adapter.py    ←   Risk management gates
+│
+├── database/              ← Supabase data layer
+│   ├── db.py              ←   All read/write helpers
+│   └── schema.sql         ←   Table definitions
+│
+├── config/                ← Configuration
+│   └── market_schedule.py ←   Trading windows (IST)
+│
+├── OT API/                ← Third-party WebSocket library (read-only)
+│
+├── .env                   ← Secrets & runtime settings (never commit)
+├── requirements.txt       ← Python dependencies
+└── Procfile               ← Railway deployment config
+```
+
+> 📂 **New here?** Start with [`backend/README.md`](backend/README.md) for the server-side architecture, or [`frontend/README.md`](frontend/README.md) for the UI layer.
+
+---
+
 ## Decision & Execution Flow
 
 Every **5 minutes** during active market sessions:
@@ -21,6 +60,15 @@ Every **5 minutes** during active market sessions:
    - **Confidence > 0.70**: Checks risk controls, determines trade size from Olymp Trade settings (defaulting to 70), executes the order on Olymp Trade, and records the open trade in Supabase.
    - **Confidence ≤ 0.70**: Skips execution and logs prediction event to Supabase.
 5. **Trade Resolution**: Tracks trade outcome. If a loss occurs, the bot safely pauses and awaits operator confirmation via Telegram or Dashboard.
+
+---
+
+## Dashboard Controls
+
+* **⚡ FORCE TRADE** — PIN-protected button that places one manual test trade immediately, bypassing the Kronos confidence gate and market hours. Use it right after pasting a new Olymp trade token (on the dashboard or via `/forcetrade` on Telegram) to confirm the token actually works and is connected. Respects DEMO/REAL mode and the configured stake.
+* **System Status** — a live panel showing whether **Supabase**, the **Kronos AI API**, and the **Olymp Trade token** are online:
+  - Supabase & Kronos re-probed every 60s, Olymp websocket re-tested every 10 min (`GET /api/health?refresh=1` forces a fresh test).
+  - Saving a new Olymp token automatically re-tests the Olymp websocket connection.
 
 ---
 
@@ -203,6 +251,7 @@ Sensitive commands require the configured `PIN` (default: `2003`).
 | `/demo` | Switch execution to DEMO account | Yes |
 | `/real` | Switch execution to REAL account | Yes |
 | `/token <JWT>` | Update Olymp Trade session token without restart | Yes |
+| `/forcetrade [symbol] <pin>` | Place one manual test trade to verify the token is connected | Yes |
 | `/forcestop` | Immediately halt automated trading | Yes |
 | `/stop` | Pause or resume automated execution | Yes |
 | `/target on/off`| Enable or disable daily profit target limit | Yes |

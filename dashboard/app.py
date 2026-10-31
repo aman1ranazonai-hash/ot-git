@@ -17,7 +17,7 @@ Flask dashboard for monitoring + controlling the Kronos Trading Bot.
 Data sources:
   * Supabase (trades, logs, settings) — live P&L, predictions, bot status
   * .env — DEMO_MODE, FORCE_STOP, TRADE_AMOUNT, OLYMP_TOKEN, ...
-  * logs/kronos_bot.log — fallback when the database is unreachable
+  * Supabase is required in production (Railway); no log-file mock data
 
 Run:  python3 dashboard/app.py   ->  http://localhost:5000
 """
@@ -25,11 +25,14 @@ Run:  python3 dashboard/app.py   ->  http://localhost:5000
 import os
 import re
 import sys
+import time
+import json
+import hashlib
+import threading
 from collections import Counter, deque
 from datetime import datetime, timedelta
 
 from flask import Flask, jsonify, render_template, request
-import json
 
 from dotenv import load_dotenv, set_key
 
@@ -43,6 +46,8 @@ from config.market_schedule import (
     MARKET_SCHEDULE,
     get_current_market as get_scheduled_market,
 )
+from adapters.olymp_adapter import _clean_token, force_trade as olymp_force_trade
+from adapters import kronos_adapter
 
 # --- Shared Supabase database (single source of truth) ---------------------
 from database.db import (
@@ -70,6 +75,39 @@ DEFAULT_PIN = "2003"
 LOG_TAIL_RETURN = 100        # /api/logs returns last 100 entries
 TRADES_RETURN = 20           # /api/trades returns last 20 trades
 
+# /api/health re-test intervals (results are cached between checks)
+SUPABASE_HEALTH_INTERVAL = 60     # cheap DB probe
+KRONOS_HEALTH_INTERVAL = 60       # cheap GET /health on the Modal API
+OLYMP_HEALTH_INTERVAL = 600       # websocket candle fetch (expensive, ~10s)
+
+# Cached service-health state
+_health_cache = {
+    "supabase": {},   # {'ok', 'detail', 'latency_ms', 'ts', 'checked_at'}
+    "kronos": {},
+    "olymp": {},      # also carries 'token_set' & 'token_sig'
+}
+_olymp_testing = False
+_kronos_testing = False          # True while background Kronos check is running
+_kronos_last_keepalive = 0.0    # epoch of last keep-alive ping
+KRONOS_KEEPALIVE_INTERVAL = 240  # ping every 4 min during market hours
+
+
+def _is_market_hours():
+    """True when the bot is actively trading (Mon-Fri 09:00-21:00 IST).
+    Keep-alive pings are skipped outside this window to conserve Modal credits.
+    """
+    from config.market_schedule import IST, is_trading_day
+    now = datetime.now(IST)
+    if not is_trading_day():
+        return False
+    hhmm = now.hour * 60 + now.minute
+    # 09:00 = 540 min, 21:00 = 1260 min
+    return 540 <= hhmm < 1260
+
+def _token_signature(token):
+    """Short fingerprint of the current Olymp token, to auto re-test when it changes."""
+    return hashlib.sha1(token.encode()).hexdigest()[:12] if token else ""
+
 # Auto-refresh intervals surfaced to the frontend (stats 5s, trades 10s, logs 2s)
 STATS_REFRESH_SECONDS = 5
 TRADES_REFRESH_SECONDS = 10
@@ -86,8 +124,9 @@ PIN_LOCKOUT_SECONDS = 300    # 5 minutes
 # Settings editable from the settings page (synced to Supabase database)
 KRONOS_CONFIDENCE_THRESHOLD = 0.75  # fixed: trade only when confidence > 0.75
 EDITABLE_SETTINGS = [
+    ("TRADE_AMOUNT", "Trade Stake Amount ($)", "number"),
+    ("OLYMP_TOKEN", "Olymp Trade Web Access Token", "password"),
     ("KRONOS_API_URL", "Kronos API URL", "text"),
-    ("TRADE_AMOUNT", "Trade amount (Olymp fallback)", "number"),
     ("LOOP_INTERVAL", "Loop interval (seconds)", "number"),
     ("DAILY_TARGET", "Daily target ($)", "number"),
     ("TRADE_DURATION", "Trade duration (seconds)", "number"),
@@ -196,6 +235,159 @@ def _next_market_info():
 
 def _client_key():
     return request.remote_addr or "anon"
+
+
+# ---------------------------------------------------------------------------
+# Service health checks (Supabase / Kronos API / Olymp token)
+# ---------------------------------------------------------------------------
+def _current_olymp_token():
+    """Sanitized Olymp token from the DB settings table or .env. Never raises."""
+    try:
+        raw = get_setting("OLYMP_TOKEN") or ""
+    except Exception:  # noqa: BLE001
+        raw = ""
+    return _clean_token(raw or os.getenv("OLYMP_TOKEN", ""))
+
+
+def _check_supabase(now):
+    """Probe the shared Supabase database. Never raises."""
+    t0 = time.time()
+    try:
+        ok = bool(db_healthy())
+        return {"ok": ok,
+                "detail": "Reachable — reading & writing OK" if ok else "Unreachable",
+                "latency_ms": round((time.time() - t0) * 1000),
+                "ts": now,
+                "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": f"Error: {e}", "ts": now,
+                "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
+
+
+def _check_kronos(now):
+    """Probe the Kronos Modal API GET /health endpoint. Never raises.
+    Timeout is 35 s — Modal cold-starts can take 30-60 s on the first call.
+    """
+    t0 = time.time()
+    ok = kronos_adapter.is_healthy(timeout=35)
+    elapsed = round((time.time() - t0) * 1000)
+    if ok:
+        detail = f"API online — {elapsed} ms ({kronos_adapter._base_url()})"
+    elif elapsed >= 34000:  # timed out = cold-starting, not broken
+        detail = f"Warming up — Modal cold-starting, retrying in {KRONOS_KEEPALIVE_INTERVAL}s\u2026"
+    else:
+        detail = f"API unreachable after {elapsed} ms"
+    return {"ok": bool(ok),
+            "detail": detail,
+            "latency_ms": elapsed,
+            "ts": now,
+            "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
+
+
+
+def _check_olymp(now, token_sig):
+    """Open a real Olymp websocket with the configured token and fetch candles.
+    This is the definitive 'is the token valid & connected' test.
+    """
+    from adapters.olymp_adapter import get_candles
+    token = _current_olymp_token()
+    if not token:
+        return {"ok": False, "token_set": False, "token_sig": "",
+                "detail": "No token configured — paste your Olymp Trade token",
+                "ts": now, "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
+    res = get_candles("EURUSD_OTC", lookback=5, size=300)
+    if isinstance(res, dict) and "error" in res:
+        return {"ok": False, "token_set": True, "token_sig": token_sig,
+                "detail": f"Connection failed: {res['error']}",
+                "ts": now, "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
+    return {"ok": True, "token_set": True, "token_sig": token_sig,
+            "detail": f"Connected — token works ({len(res)} live candles received)",
+            "ts": now, "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
+
+
+def _olymp_worker(token_sig):
+    """Deep Olymp websocket test in a background thread (the request must not block ~10s)."""
+    global _olymp_testing
+    try:
+        _health_cache["olymp"] = _check_olymp(time.time(), token_sig)
+    finally:
+        _olymp_testing = False
+
+
+def _kronos_worker():
+    """Run Kronos /health in a background thread so the dashboard never blocks."""
+    global _kronos_testing, _kronos_last_keepalive
+    try:
+        result = _check_kronos(time.time())
+        _health_cache["kronos"] = result
+        if result.get("ok"):
+            _kronos_last_keepalive = time.time()
+    finally:
+        _kronos_testing = False
+
+
+
+
+
+
+@app.route("/api/health")
+def api_health():
+    """
+    Service status for the dashboard 'System Status' section:
+      * Supabase     — reachable & answering queries
+      * Kronos API   — Modal endpoint answering /health
+      * Olymp token  — real websocket connect + candle fetch with the token
+
+    Results are cached between checks; pass ?refresh=1 to force a re-test.
+    A token change (dashboard/Telegram update) auto-triggers a re-test.
+    """
+    global _olymp_testing
+    force = str(request.args.get("refresh", "")).lower() in ("1", "true")
+    now = time.time()
+    token_sig = _token_signature(_current_olymp_token())
+
+    def stale(key, interval):
+        e = _health_cache.get(key) or {}
+        return force or not e or (now - e.get("ts", 0) > interval)
+
+    if stale("supabase", SUPABASE_HEALTH_INTERVAL):
+        _health_cache["supabase"] = _check_supabase(now)
+
+    # Kronos check runs in a background thread (non-blocking) — same pattern as Olymp
+    global _kronos_testing
+    if not _kronos_testing and stale("kronos", KRONOS_HEALTH_INTERVAL):
+        _kronos_testing = True
+        threading.Thread(target=_kronos_worker, daemon=True).start()
+
+    olymp = _health_cache.get("olymp") or {}
+    token_changed = token_sig and olymp.get("token_sig") and olymp.get("token_sig") != token_sig
+    if not _olymp_testing and (
+        force or not olymp
+        or now - olymp.get("ts", 0) > OLYMP_HEALTH_INTERVAL
+        or token_changed
+    ):
+        _olymp_testing = True
+        threading.Thread(target=_olymp_worker, args=(token_sig,), daemon=True).start()
+
+    olymp_out = dict(_health_cache.get("olymp") or {})
+    if _olymp_testing and not olymp_out:
+        olymp_out = {"checking": True, "ok": None, "token_set": bool(token_sig),
+                     "detail": "Testing Olymp websocket connection...",
+                     "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
+    kronos_out = dict(_health_cache.get("kronos") or {})
+    if _kronos_testing and not kronos_out:
+        kronos_out = {"checking": True, "ok": None,
+                      "detail": "Connecting to Kronos API...",
+                      "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
+
+    return jsonify({
+        "supabase": _health_cache.get("supabase") or {},
+        "kronos": kronos_out,
+        "kronos_testing": _kronos_testing,
+        "olymp": olymp_out,
+        "olymp_testing": _olymp_testing,
+        "updated_at": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +508,25 @@ def get_status():
 
     running = _bot_running and not force_stop
 
+    trade_amt = 70.0
+    try:
+        db_amt = get_setting("TRADE_AMOUNT")
+        if db_amt:
+            trade_amt = float(db_amt)
+        else:
+            trade_amt = _env_float("TRADE_AMOUNT", 70.0)
+    except Exception:
+        trade_amt = _env_float("TRADE_AMOUNT", 70.0)
+
+    raw_token = ""
+    try:
+        raw_token = get_setting("OLYMP_TOKEN") or os.getenv("OLYMP_TOKEN", "")
+    except Exception:
+        raw_token = os.getenv("OLYMP_TOKEN", "")
+    token = _clean_token(raw_token)
+    token_set = bool(token)
+    token_preview = f"{token[:8]}...{token[-4:]}" if len(token) > 16 else ("Active" if token_set else "Not set")
+
     return {
         "market": market["symbol"] if market else None,
         "market_name": market["name"] if market else None,
@@ -324,7 +535,9 @@ def get_status():
         "signal": signal,
         "confidence": round(confidence, 1),
         "threshold": round(KRONOS_CONFIDENCE_THRESHOLD * 100, 1),
-        "trade_amount": _env_float("TRADE_AMOUNT", 70.0),
+        "trade_amount": trade_amt,
+        "token_set": token_set,
+        "token_preview": token_preview,
         "pnl": round(pnl, 2),
         "pnl_formatted": format_pnl(pnl),
         "trades_today": trades_today,
@@ -506,9 +719,9 @@ def api_command():
 
         load_dotenv(ENV_FILE, override=True)
 
-        sensitive = {"stop", "demo", "real", "forcestop", "set_token", "set_target"}
+        sensitive = {"stop", "demo", "real", "forcestop", "set_token", "set_target", "set_trade_amount", "set_amount", "force_trade"}
         if command not in {"start", "stop", "demo", "real", "forcestop",
-                           "set_token", "set_target"}:
+                           "set_token", "set_target", "set_trade_amount", "set_amount", "force_trade"}:
             _audit(f"command:{command}", ok=False, note="unknown command")
             return jsonify({"success": False, "message": "Unknown command"}), 400
 
@@ -551,11 +764,29 @@ def api_command():
             _save_setting("DEMO_MODE", "true")
         elif command == "real":
             _save_setting("DEMO_MODE", "false")
+        elif command in ("set_trade_amount", "set_amount"):
+            amount = data.get("amount")
+            if amount is None:
+                return jsonify({"success": False, "message": "Missing trade amount"}), 400
+            try:
+                amt = float(amount)
+                if amt <= 0:
+                    return jsonify({"success": False, "message": "Amount must be greater than $0"}), 400
+                if amt > 10000:
+                    return jsonify({"success": False, "message": "Amount exceeds safety limit ($10,000)"}), 400
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "message": "Invalid amount"}), 400
+            _save_setting("TRADE_AMOUNT", str(amt))
+            insert_log("SETTINGS", f"Trade amount set to ${amt:g} via dashboard", {"trade_amount": amt})
         elif command == "set_token":
-            token = str(data.get("token", "")).strip()
-            if not token:
+            raw_token = str(data.get("token", "")).strip()
+            if not raw_token:
                 return jsonify({"success": False, "message": "Missing token"}), 400
-            _save_setting("OLYMP_TOKEN", token)
+            cleaned_token = _clean_token(raw_token)
+            if len(cleaned_token) < 20:
+                return jsonify({"success": False, "message": "Token appears invalid or too short"}), 400
+            _save_setting("OLYMP_TOKEN", cleaned_token)
+            insert_log("SETTINGS", "Olymp Trade token updated via dashboard", {"preview": f"{cleaned_token[:6]}...{cleaned_token[-4:]}"})
         elif command == "set_target":
             amount = data.get("amount")
             enabled = bool(data.get("enabled", True))
@@ -565,6 +796,27 @@ def api_command():
                 except (TypeError, ValueError):
                     return jsonify({"success": False, "message": "Invalid amount"}), 400
             _save_setting("DAILY_TARGET_ENABLED", "true" if enabled else "false")
+        elif command == "force_trade":
+            # Manual test trade — bypasses the AI-confidence gate & market hours
+            # to verify a freshly pasted Olymp token actually places orders.
+            # Blocks up to ~30s (websocket connect + order placement).
+            ft = olymp_force_trade(
+                symbol=str(data.get("symbol") or "") or None,
+                direction=str(data.get("direction") or "BUY"),
+            )
+            if ft.get("ok"):
+                return jsonify({
+                    "success": True,
+                    "message": (f"⚡ Force trade PLACED — {ft['symbol']} {ft['direction']} "
+                                f"${float(ft['amount']):g} ({ft.get('group') or 'demo'} account). "
+                                "Token is working & connected!"),
+                    "result": ft,
+                })
+            return jsonify({
+                "success": False,
+                "message": f"❌ Force trade failed: {(ft.get('error') or 'unknown error')}",
+                "result": ft,
+            })
 
         if os.path.exists(ENV_FILE):
             load_dotenv(ENV_FILE, override=True)
@@ -576,8 +828,11 @@ def api_command():
             "demo": "✅ Switched to DEMO mode",
             "real": "✅ Switched to REAL mode",
             "forcestop": "⛔ Bot stopped!",
-            "set_token": "✅ Token updated!",
+            "set_token": "✅ Olymp Trade token updated and active!",
+            "set_trade_amount": f"✅ Trade amount updated to ${float(data.get('amount', 0)):g}!",
+            "set_amount": f"✅ Trade amount updated to ${float(data.get('amount', 0)):g}!",
             "set_target": "✅ Target enabled!" if data.get("enabled", True) else "✅ Target disabled",
+            "force_trade": "⚡ Force trade executed!",
         }
         return jsonify({"success": True, "message": messages.get(command, "✅ Action complete!")})
 
@@ -633,7 +888,18 @@ def api_settings_post():
         for key, value in updates.items():
             if key not in {k for k, _, _ in EDITABLE_SETTINGS}:
                 continue
-            _save_setting(key, str(value))
+            val_str = str(value).strip()
+            if key == "OLYMP_TOKEN":
+                val_str = _clean_token(val_str)
+            elif key == "TRADE_AMOUNT":
+                try:
+                    v = float(val_str)
+                    if v <= 0:
+                        continue
+                    val_str = str(v)
+                except ValueError:
+                    continue
+            _save_setting(key, val_str)
             applied.append(key)
         if os.path.exists(ENV_FILE):
             load_dotenv(ENV_FILE, override=True)

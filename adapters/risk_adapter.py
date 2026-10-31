@@ -136,14 +136,7 @@ def check_risk(decision=None, market_data=None, trade_history=None):
 
 
 # ---------------------------------------------------------------------------
-# CLI self-test: python3 -m adapters.risk_adapter
+# Live check: python3 -m adapters.risk_adapter
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("check_risk():", check_risk("BUY"))
-    print("3 straight losses:",
-          check_risk("BUY", trade_history=[
-              {"status": "closed", "pnl": 1.0},
-              {"status": "closed", "pnl": -1.0},
-              {"status": "closed", "pnl": -1.0},
-              {"status": "closed", "pnl": -1.0},
-          ]))

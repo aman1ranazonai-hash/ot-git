@@ -43,6 +43,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from bot import is_trading_day
+from adapters.olymp_adapter import _clean_token, force_trade as olymp_force_trade
 
 from config.market_schedule import (
     IST,
@@ -333,12 +334,29 @@ class KronosTelegramBot:
             return self.kronos.update_olymp_token(token, pin)
         if not self._verify_pin(pin):
             return False, "Invalid PIN"
-        if not token or not str(token).strip():
+        cleaned = _clean_token(token)
+        if not cleaned:
             return False, "Empty token"
-        _save_setting("OLYMP_TOKEN", str(token).strip())
+        _save_setting("OLYMP_TOKEN", cleaned)
         if os.path.exists(ENV_FILE):
             load_dotenv(ENV_FILE, override=True)
         return True, "Token updated"
+
+    def _set_trade_amount(self, amount, pin):
+        if self.kronos:
+            return self.kronos.set_trade_amount(amount, pin)
+        if not self._verify_pin(pin):
+            return False, "Invalid PIN"
+        try:
+            amt = float(amount)
+            if amt <= 0:
+                return False, "Trade amount must be greater than 0"
+        except (TypeError, ValueError):
+            return False, "Invalid trade amount"
+        _save_setting("TRADE_AMOUNT", str(amt))
+        if os.path.exists(ENV_FILE):
+            load_dotenv(ENV_FILE, override=True)
+        return True, f"Trade amount set to ${amt:g}"
 
     def _set_force_stop(self, stop, pin):
         if self.kronos:
@@ -615,7 +633,7 @@ class KronosTelegramBot:
                 return
             ok, _ = self._set_token(new_token, p)
             if ok:
-                await self._reply(update, "✅ ken updated!")
+                await self._reply(update, "✅ Token updated!")
                 self._bg_verify_token(new_token.strip())
             self._log_command(update, "/token ***", ok=ok)  # never log the token
 
@@ -655,6 +673,36 @@ class KronosTelegramBot:
         task = app_task(_run())
         if task:
             self._bg_tasks.append(task)
+
+    @safe_handler
+    async def cmd_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await self._gate(update, "/amount"):
+            return
+        args = context.args or []
+        if not args:
+            curr = os.getenv("TRADE_AMOUNT", "70")
+            await self._reply(update, f"💰 Current trade stake: <b>${curr}</b>\nUsage: <code>/amount 20 2003</code>")
+            return
+        amount = _to_float(args[0], None)
+        if amount is None or amount <= 0:
+            await self._reply(update, "⚠️ Invalid amount. Example: <code>/amount 30 2003</code>")
+            return
+        pin = args[-1] if len(args) >= 2 else None
+
+        async def _apply(p):
+            if not await self._check_pin(update, p):
+                return
+            ok, msg = self._set_trade_amount(amount, p)
+            if ok:
+                await self._reply(update, f"✅ Trade amount updated to <b>${amount:g}</b>")
+            else:
+                await self._reply(update, f"❌ {msg}")
+            self._log_command(update, f"/amount {amount}", ok=ok)
+
+        if pin:
+            await _apply(pin)
+        else:
+            await self._need_pin(update, f"set trade amount to ${amount:g}", _apply)
 
     @safe_handler
     async def cmd_forcestop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -753,6 +801,40 @@ class KronosTelegramBot:
         self._log_command(update, "/market")
 
     @safe_handler
+    async def cmd_forcetrade(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Place one manual test trade to verify the Olymp token works & is connected."""
+        if not await self._gate(update, "/forcetrade"):
+            return
+        args = context.args or []
+        pin = args[-1] if args and str(args[-1]).isdigit() else None
+        rest = args[:-1] if pin else args
+        symbol = rest[0] if rest else None
+
+        async def _apply(p):
+            if not await self._check_pin(update, p):
+                return
+            await self._reply(update, "⚡ Placing force trade… (connects to Olymp, may take up to 30s)")
+            # olymp_force_trade drives its own asyncio.run loop -> run in a thread
+            ft = await asyncio.to_thread(olymp_force_trade, symbol)
+            if ft.get("ok"):
+                text = (f"⚡ <b>Force trade PLACED!</b>\n\n"
+                        f"📊 {html.escape(str(ft['symbol']))} — <b>{html.escape(str(ft['direction']))}</b>\n"
+                        f"💵 Stake: ${float(ft['amount']):g}\n"
+                        f"🎛 Account: {html.escape(str(ft.get('group') or 'demo').upper())}\n\n"
+                        "✅ Token is working & connected — trades will flow normally.")
+            else:
+                text = (f"❌ <b>Force trade FAILED</b>\n\n"
+                        f"{html.escape(str(ft.get('error') or 'unknown error'))}\n\n"
+                        "⚠️ The Olymp token is likely expired or not connected — paste a fresh token with /token.")
+            await self._reply(update, text)
+            self._log_command(update, "/forcetrade", ok=bool(ft.get("ok")), note=str(ft.get("symbol")))
+
+        if pin:
+            await _apply(pin)
+        else:
+            await self._need_pin(update, "place a force (test) trade", _apply)
+
+    @safe_handler
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await self._gate(update, "/help"):
             return
@@ -767,7 +849,9 @@ class KronosTelegramBot:
             "🔐 <b>PIN-protected</b> (append PIN or send it when asked):\n"
             "/demo — switch to DEMO mode\n"
             "/real — switch to REAL mode\n"
+            "/amount &lt;amount&gt; &lt;pin&gt; — set trade stake (e.g. 20, 30, 40)\n"
             "/token &lt;new_token&gt; &lt;pin&gt; — update Olymp token\n"
+            "/forcetrade &lt;pin&gt; — place a test trade to verify the token\n"
             "/forcestop — emergency stop all trading\n"
             "/target on &lt;amount&gt; &lt;pin&gt; — enable daily target\n"
             "/target off &lt;pin&gt; — disable daily target\n"
@@ -999,7 +1083,9 @@ class KronosTelegramBot:
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("demo", self.cmd_demo))
         app.add_handler(CommandHandler("real", self.cmd_real))
+        app.add_handler(CommandHandler("amount", self.cmd_amount))
         app.add_handler(CommandHandler("token", self.cmd_token))
+        app.add_handler(CommandHandler("forcetrade", self.cmd_forcetrade))
         app.add_handler(CommandHandler("forcestop", self.cmd_forcestop))
         app.add_handler(CommandHandler("target", self.cmd_target))
         app.add_handler(CommandHandler("help", self.cmd_help))

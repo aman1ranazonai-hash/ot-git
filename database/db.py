@@ -469,27 +469,10 @@ def resolve_alerts(alert_id=None):
 
 
 # ---------------------------------------------------------------------------
-# CLI self-test: python3 database/db.py
+# Live connectivity check: python3 database/db.py
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("=" * 60)
-    print("database/db.py self-test")
-    print("=" * 60)
-
-    ok = insert_log("START", "db.py self-test START event", {"source": "self_test"})
-    print(("✅" if ok else "❌"), "insert_log ->", ok)
-
-    tid = insert_trade("TEST", 1.0000, "BUY", 0.5, status="open")
-    print(("✅" if tid else "❌"), "insert_trade -> id:", tid)
-
-    if tid:
-        closed = close_trade(tid, exit_price=1.0010, pnl=1.0)
-        print(("✅" if closed else "❌"), "close_trade ->", closed)
-
-    pnl, trades, wr, wins, losses = (
-        get_daily_pnl(), len(get_daily_trades()), *get_win_rate())
-    print(f"ℹ️  get_daily_pnl={pnl} | trades today={trades} | "
-          f"win rate={wr}% ({wins}W/{losses}L)")
-
-    print("Done — if any ❌ above, check SUPABASE_URL/KEY in .env and the")
-    print("GRANT/RLS SQL from setup/init_database.py.")
+    print("db_healthy:", db_healthy())
+    print("daily_pnl:", get_daily_pnl())
+    print("trades_today:", len(get_daily_trades()))
+    print("win_rate:", get_win_rate())

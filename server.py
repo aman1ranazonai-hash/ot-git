@@ -40,7 +40,10 @@ from database.db import (
     get_alerts,
     resolve_alerts,
     insert_log,
+    set_setting,
 )
+from adapters.olymp_adapter import _clean_token
+from dotenv import set_key
 
 app = FastAPI(
     title="Kronos Trading Bot API",
@@ -67,6 +70,18 @@ class PauseRequest(BaseModel):
     token: Optional[str] = None
     pin: Optional[str] = None
     reason: Optional[str] = "Manual pause via API"
+
+
+class SetTradeAmountRequest(BaseModel):
+    amount: float
+    token: Optional[str] = None
+    pin: Optional[str] = None
+
+
+class SetOlympTokenRequest(BaseModel):
+    olymp_token: str
+    token: Optional[str] = None
+    pin: Optional[str] = None
 
 
 def _validate_user(
@@ -194,6 +209,66 @@ def pause_trading(
     }
 
 
+@app.post("/set-trade-amount")
+def set_trade_amount(
+    request: Request,
+    body: SetTradeAmountRequest,
+    x_api_key: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Set the trade amount (stake) in USD."""
+    if not _validate_user(request, x_api_key, authorization, body.token, body.pin):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: invalid or missing token / PIN",
+        )
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+
+    amt_str = str(body.amount)
+    os.environ["TRADE_AMOUNT"] = amt_str
+    set_setting("TRADE_AMOUNT", amt_str)
+    env_file = os.path.join(PROJECT_ROOT, ".env")
+    if os.path.exists(env_file):
+        try:
+            set_key(env_file, "TRADE_AMOUNT", amt_str)
+        except Exception:
+            pass
+
+    insert_log("SETTINGS_API", f"Trade amount set to ${body.amount:g} via API")
+    return {"status": "SUCCESS", "trade_amount": body.amount, "message": f"Trade amount updated to ${body.amount:g}"}
+
+
+@app.post("/set-olymp-token")
+def set_olymp_token(
+    request: Request,
+    body: SetOlympTokenRequest,
+    x_api_key: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Update Olymp Trade access token via API."""
+    if not _validate_user(request, x_api_key, authorization, body.token, body.pin):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: invalid or missing token / PIN",
+        )
+    cleaned = _clean_token(body.olymp_token)
+    if len(cleaned) < 20:
+        raise HTTPException(status_code=400, detail="Token appears invalid or too short")
+
+    os.environ["OLYMP_TOKEN"] = cleaned
+    set_setting("OLYMP_TOKEN", cleaned)
+    env_file = os.path.join(PROJECT_ROOT, ".env")
+    if os.path.exists(env_file):
+        try:
+            set_key(env_file, "OLYMP_TOKEN", cleaned)
+        except Exception:
+            pass
+
+    insert_log("SETTINGS_API", "Olymp Trade token updated via API", {"preview": f"{cleaned[:6]}...{cleaned[-4:]}"})
+    return {"status": "SUCCESS", "message": "Olymp Trade token updated and active"}
+
+
 @app.get("/alerts")
 def list_alerts(resolved: Optional[bool] = None, limit: int = 20):
     """List recent alerts from the database."""
@@ -209,6 +284,8 @@ def root():
             "GET  /bot-status",
             "POST /resume-trading",
             "POST /pause-trading",
+            "POST /set-trade-amount",
+            "POST /set-olymp-token",
             "GET  /alerts",
         ],
     }

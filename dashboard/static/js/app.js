@@ -154,8 +154,36 @@ async function refreshStatus() {
     const navPnl = $("nav-pnl");
     navPnl.textContent = s.pnl_formatted;
     navPnl.className = "nav-pnl " + (pos ? "pos" : "neg");
-    const dbFlag = s.db_connected ? "· DB ✅" : "· DB ⚠️ (fallback)";
     setText("last-update", `Updated ${s.updated_at} ${dbFlag}`);
+
+    // trade stake display & active button highlighting
+    if (s.trade_amount != null) {
+      setText("stat-trade-amount", `$${s.trade_amount}`);
+      setText("current-trade-amount", `$${s.trade_amount}`);
+      document.querySelectorAll(".btn-amount").forEach((b) => {
+        const val = parseFloat(b.dataset.amount);
+        if (val === Number(s.trade_amount)) {
+          b.classList.add("active");
+        } else {
+          b.classList.remove("active");
+        }
+      });
+    }
+
+    // olymp token status badge & preview
+    const tokenBadge = $("token-status-badge");
+    const tokenPreview = $("token-preview");
+    if (tokenBadge && tokenPreview) {
+      if (s.token_set) {
+        tokenBadge.className = "badge badge-token-ok";
+        tokenBadge.textContent = "● Token Active";
+        tokenPreview.textContent = s.token_preview || "Active";
+      } else {
+        tokenBadge.className = "badge badge-token-missing";
+        tokenBadge.textContent = "⚠️ Not Set";
+        tokenPreview.textContent = "No token configured";
+      }
+    }
 
     // reflect state in control buttons
     // START stays clickable while the bot is paused after a loss — that click
@@ -179,6 +207,43 @@ async function refreshStatus() {
     setText("stat-pnl", "Loading data...");
     setText("stat-market", "Loading data...");
     setText("last-update", `Retrying every 5s (${e.message})`);
+  }
+}
+
+/* ---------------------------- Refresh: health ---------------------------- */
+function renderHealthService(key, s) {
+  const dot = $(`health-${key}-dot`);
+  const detail = $(`health-${key}-detail`);
+  const timeEl = $(`health-${key}-time`);
+  if (!dot || !detail) return;
+  if (!s || (s.ok == null && !s.checking)) {
+    dot.className = "health-dot unknown";
+    detail.textContent = "Checking…";
+  } else if (s.checking || s.ok == null) {
+    dot.className = "health-dot checking";
+    detail.textContent = s.detail || "Testing connection…";
+  } else if (s.ok) {
+    dot.className = "health-dot ok";
+    detail.textContent = s.detail || "Online";
+  } else {
+    dot.className = "health-dot down";
+    detail.textContent = s.detail || "Offline";
+  }
+  if (timeEl) timeEl.textContent = s && s.checked_at ? `Checked ${s.checked_at}` : "";
+}
+
+async function refreshHealth(force = false) {
+  if (!isDashboard) return;
+  try {
+    const data = await apiGet("/api/health" + (force ? "?refresh=1" : ""));
+    renderHealthService("supabase", data.supabase);
+    renderHealthService("kronos", data.kronos);
+    renderHealthService("olymp", data.olymp);
+  } catch (e) {
+    for (const key of ["supabase", "kronos", "olymp"]) {
+      const dot = $(`health-${key}-dot`);
+      if (dot) dot.className = "health-dot unknown";
+    }
   }
 }
 
@@ -307,20 +372,102 @@ function initDashboard() {
     confirmDialog("EMERGENCY STOP all trading now?", () =>
       runCommand("forcestop", {}, true, "force-stop the bot")));
 
-  $("btn-set-token").addEventListener("click", () => {
-    const token = $("token-input").value.trim();
-    if (!token) return showMessage($("control-msg"), "Enter a token first", false);
-    pinModal.open("Update Olymp token", async (pin) => {
-      const { ok, data } = await apiPost("/api/command", { command: "set_token", token, pin });
+  // Force trade: manual test trade to verify the Olymp token works & is connected
+  $("btn-force-trade").addEventListener("click", () =>
+    confirmDialog("Place a FORCE TRADE now?\n\n" +
+      "This bypasses the AI confidence gate and market hours and places a real trade " +
+      "with the current stake (demo account unless REAL mode is on). " +
+      "Used to verify a newly pasted Olymp token.", () =>
+      runCommand("force_trade", {}, true, "place a force trade (test trade)")));
+
+  // System status re-test
+  const healthRefresh = $("btn-health-refresh");
+  if (healthRefresh) {
+    healthRefresh.addEventListener("click", () => refreshHealth(true));
+  }
+
+  // Quick trade amount selection ($20, $30, $40)
+  document.querySelectorAll(".btn-amount").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const amt = parseFloat(btn.dataset.amount);
+      if (!amt) return;
+      pinModal.open(`Set trade stake to $${amt}`, async (pin) => {
+        const { ok, data } = await apiPost("/api/command", {
+          command: "set_trade_amount",
+          amount: amt,
+          pin,
+        });
+        if (ok && data.success) {
+          pinModal.close();
+          showMessage($("control-msg"), `✅ Trade stake updated to $${amt}!`, true);
+          refreshStatus();
+        } else if (data.message && data.message.includes("Wrong PIN")) {
+          pinModal.error.textContent = data.message;
+        } else {
+          pinModal.close();
+          showMessage($("control-msg"), data.message || "⚠️ Error updating trade amount", false);
+        }
+      });
+    });
+  });
+
+  // Custom trade amount submission
+  $("btn-set-trade-amount").addEventListener("click", () => {
+    const amt = parseFloat($("trade-amount-input").value);
+    if (!amt || amt <= 0) return showMessage($("control-msg"), "Enter a valid trade amount", false);
+    pinModal.open(`Set trade stake to $${amt}`, async (pin) => {
+      const { ok, data } = await apiPost("/api/command", {
+        command: "set_trade_amount",
+        amount: amt,
+        pin,
+      });
       if (ok && data.success) {
-        $("token-input").value = "";
+        $("trade-amount-input").value = "";
         pinModal.close();
-        showMessage($("control-msg"), "✅ Token updated!", true);
+        showMessage($("control-msg"), `✅ Trade stake updated to $${amt}!`, true);
+        refreshStatus();
       } else if (data.message && data.message.includes("Wrong PIN")) {
         pinModal.error.textContent = data.message;
       } else {
         pinModal.close();
-        showMessage($("control-msg"), data.message || "⚠️ Error", false);
+        showMessage($("control-msg"), data.message || "⚠️ Error updating trade amount", false);
+      }
+    });
+  });
+
+  // Toggle token input eye visibility
+  const tokenEyeBtn = $("btn-toggle-token-eye");
+  if (tokenEyeBtn) {
+    tokenEyeBtn.addEventListener("click", () => {
+      const inp = $("token-input");
+      if (inp.type === "password") {
+        inp.type = "text";
+        tokenEyeBtn.textContent = "🙈";
+      } else {
+        inp.type = "password";
+        tokenEyeBtn.textContent = "👁️";
+      }
+    });
+  }
+
+  // Update Olymp Token
+  $("btn-set-token").addEventListener("click", () => {
+    const token = $("token-input").value.trim();
+    if (!token) return showMessage($("control-msg"), "Paste an Olymp Trade web token first", false);
+    pinModal.open("Update Olymp Trade Web Token", async (pin) => {
+      const { ok, data } = await apiPost("/api/command", { command: "set_token", token, pin });
+      if (ok && data.success) {
+        $("token-input").value = "";
+        pinModal.close();
+        showMessage($("control-msg"), "✅ Olymp Trade token updated and active!", true);
+        refreshStatus();
+        // New token saved — immediately re-test the Olymp connection
+        refreshHealth(true);
+      } else if (data.message && data.message.includes("Wrong PIN")) {
+        pinModal.error.textContent = data.message;
+      } else {
+        pinModal.close();
+        showMessage($("control-msg"), data.message || "⚠️ Error updating token", false);
       }
     });
   });
@@ -348,11 +495,12 @@ function initDashboard() {
   });
 
   // initial load + intervals (spec: stats 5s, trades 10s, logs 2s)
-  refreshStatus(); refreshTrades(); refreshLogs(); refreshMarkets();
+  refreshStatus(); refreshTrades(); refreshLogs(); refreshMarkets(); refreshHealth();
   setInterval(refreshStatus, 5000);
   setInterval(refreshTrades, 10000);
   setInterval(refreshLogs, 2000);
   setInterval(refreshMarkets, 30000);
+  setInterval(() => refreshHealth(false), 30000);
 }
 
 /* ------------------------- Settings page logic --------------------------- */
@@ -374,7 +522,7 @@ function initSettings() {
       editableList.innerHTML = (data.editable || []).map((s) => `
         <div class="edit-row">
           <label for="set-${s.key}">${s.label} <code>${s.key}</code></label>
-          <input id="set-${s.key}" type="${s.type === 'number' ? 'number' : 'text'}"
+          <input id="set-${s.key}" type="${s.type === 'number' ? 'number' : s.type === 'password' ? 'password' : 'text'}"
                  step="any" value="${escapeHtml(s.value ?? "")}">
         </div>`).join("");
       saveBtn.disabled = false;

@@ -1,0 +1,9 @@
+# nixpacks.toml — Railway build configuration
+# Pins the Python version since Railway uses Nixpacks (not Heroku buildpacks).
+# runtime.txt is ignored by Nixpacks.
+
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[variables]
+PYTHONUNBUFFERED = "1"

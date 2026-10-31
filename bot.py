@@ -39,7 +39,7 @@ from database.db import (
 )
 
 import threading
-from adapters.olymp_adapter import execute_trade, get_trade_amount, get_candles
+from adapters.olymp_adapter import execute_trade, get_trade_amount, get_candles, _clean_token
 
 # Make sure the project root is importable no matter where we launch from
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +70,17 @@ MAX_API_RETRIES = 3                  # retries for timeouts / connection errors
 RETRY_DELAY = 5                      # seconds between retries (multiplied by attempt)
 API_TIMEOUT = 30                     # seconds per HTTP request
 OLYMP_CONNECT_TIMEOUT = 15           # seconds for WS connect / candle fetch
+
+# --- Candle pre-filter (skips Kronos call on flat/low-volatility markets) ----
+# Set KRONOS_PREFILTER=false in .env to disable.
+# The filter looks at the last PREFILTER_LOOKBACK candles:
+#   - avg body ratio  (|close-open| / (high-low)) must exceed PREFILTER_BODY_RATIO
+#   - OR range as % of price                      must exceed PREFILTER_RANGE_PCT
+# Either condition passing = market is moving = call Kronos.
+# Both failing = market is flat = skip Kronos, save the API token.
+PREFILTER_LOOKBACK   = 6            # look at last 6 candles (30 min of 5m data)
+PREFILTER_BODY_RATIO = 0.25         # candle body must be ≥25% of its wick range
+PREFILTER_RANGE_PCT  = 0.0008       # or high-low spread ≥0.08% of price
 
 ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
 
@@ -285,14 +296,32 @@ class KronosBot:
         """PIN-protected token update — reloads without restarting the bot."""
         if not self.verify_pin(entered_pin):
             return False, "Invalid PIN"
-        if not new_token or not str(new_token).strip():
+        cleaned = _clean_token(new_token)
+        if not cleaned:
             return False, "Empty token"
-        self.olymp_token = str(new_token).strip()
+        self.olymp_token = cleaned
         self._persist_env("OLYMP_TOKEN", self.olymp_token)
         self.log(None, "Olymp token updated and reloaded (no restart needed)")
         self.log_event("PIN_ATTEMPT", "PIN verified for token update", {"action": "update_token"})
         self.log_event("TOKEN", "Olymp token updated and reloaded (no restart needed)")
         return True, "Token updated"
+
+    def set_trade_amount(self, amount, entered_pin):
+        """PIN-protected trade stake update (e.g. 20, 30, 40) — reloads without restarting the bot."""
+        if not self.verify_pin(entered_pin):
+            return False, "Invalid PIN"
+        try:
+            amt = float(amount)
+            if amt <= 0:
+                return False, "Trade amount must be greater than 0"
+        except (TypeError, ValueError):
+            return False, "Invalid trade amount"
+        self.trade_amount = amt
+        self._persist_env("TRADE_AMOUNT", str(amt))
+        self.log(None, f"Trade amount updated to ${amt:g} (no restart needed)")
+        self.log_event("PIN_ATTEMPT", "PIN verified for trade amount update", {"action": "set_trade_amount"})
+        self.log_event("SETTINGS", f"Trade amount set to ${amt:g}", {"trade_amount": amt})
+        return True, f"Trade amount set to ${amt:g}"
 
     def set_force_stop(self, stop, entered_pin):
         """PIN-protected force stop / resume."""
@@ -331,7 +360,8 @@ class KronosBot:
     def reload_settings(self):
         """Re-read .env + DB settings each cycle so external changes take effect without restart."""
         old = (self.demo_mode, self.force_stop, self.daily_target_enabled,
-               self.olymp_token, self.daily_target, self.auto_execute_trades)
+               self.olymp_token, self.daily_target, self.auto_execute_trades,
+               self.trade_amount)
         if os.path.exists(ENV_FILE):
             load_dotenv(ENV_FILE, override=True)
 
@@ -356,9 +386,22 @@ class KronosBot:
 
         db_token = get_setting("OLYMP_TOKEN")
         if db_token:
-            self.olymp_token = db_token
+            self.olymp_token = _clean_token(db_token)
         else:
-            self.olymp_token = os.getenv("OLYMP_TOKEN", self.olymp_token)
+            self.olymp_token = _clean_token(os.getenv("OLYMP_TOKEN", self.olymp_token))
+        os.environ["OLYMP_TOKEN"] = self.olymp_token
+
+        db_amount = get_setting("TRADE_AMOUNT")
+        if db_amount:
+            try:
+                amt = float(db_amount)
+                if amt > 0:
+                    self.trade_amount = amt
+                    os.environ["TRADE_AMOUNT"] = str(amt)
+            except ValueError:
+                pass
+        else:
+            self.trade_amount = _env_float("TRADE_AMOUNT", self.trade_amount)
 
         db_target = get_setting("DAILY_TARGET")
         if db_target:
@@ -372,7 +415,8 @@ class KronosBot:
         self.min_confidence = _env_float("MIN_CONFIDENCE", self.min_confidence)
         self.auto_execute_trades = _env_bool("AUTO_EXECUTE_TRADES", getattr(self, "auto_execute_trades", True))
         new = (self.demo_mode, self.force_stop, self.daily_target_enabled,
-               self.olymp_token, self.daily_target, self.auto_execute_trades)
+               self.olymp_token, self.daily_target, self.auto_execute_trades,
+               self.trade_amount)
         if old != new:
             self.log(None, "Settings reloaded (change detected from DB/env)")
 
@@ -434,6 +478,44 @@ class KronosBot:
             return None
 
     # ------------------------------------------------------------------
+    # Candle pre-filter — cheap local check before hitting Kronos
+    # ------------------------------------------------------------------
+    def _candle_prefilter(self, candles, symbol):
+        """Return (should_call_kronos: bool, reason: str).
+
+        Skips the Kronos API call when the market is flat/low-volatility
+        to preserve Modal credits.  Disabled via KRONOS_PREFILTER=false.
+        """
+        if not _env_bool("KRONOS_PREFILTER", default=True):
+            return True, "prefilter disabled"
+        if not candles or len(candles) < PREFILTER_LOOKBACK:
+            return True, "not enough candles for prefilter"
+
+        recent = candles[-PREFILTER_LOOKBACK:]
+        body_ratios, range_pcts = [], []
+        for c in recent:
+            o = float(c.get("open") or c.get("o") or 0)
+            h = float(c.get("high") or c.get("h") or o)
+            lo = float(c.get("low")  or c.get("l") or o)
+            cl = float(c.get("close") or c.get("c") or o)
+            wick = h - lo
+            body = abs(cl - o)
+            mid  = (h + lo) / 2 if (h + lo) > 0 else 1
+            body_ratios.append(body / wick if wick > 0 else 0)
+            range_pcts.append(wick / mid   if mid  > 0 else 0)
+
+        avg_body  = sum(body_ratios) / len(body_ratios)
+        avg_range = sum(range_pcts)  / len(range_pcts)
+
+        if avg_body >= PREFILTER_BODY_RATIO:
+            return True, f"body ratio {avg_body:.2f} ≥ {PREFILTER_BODY_RATIO} — market moving"
+        if avg_range >= PREFILTER_RANGE_PCT:
+            return True, f"range {avg_range*100:.4f}% ≥ {PREFILTER_RANGE_PCT*100:.4f}% — market moving"
+
+        return False, (f"flat market — body {avg_body:.2f} < {PREFILTER_BODY_RATIO}, "
+                       f"range {avg_range*100:.4f}% < {PREFILTER_RANGE_PCT*100:.4f}%")
+
+    # ------------------------------------------------------------------
     # Kronos Modal API
     # ------------------------------------------------------------------
     @staticmethod
@@ -472,7 +554,7 @@ class KronosBot:
             h = float(c.get("high") or c.get("h") or o)
             l = float(c.get("low") or c.get("l") or o)
             cl = float(c.get("close") or c.get("c") or o)
-            v = float(c.get("volume") or c.get("vol") or c.get("v") or 100.0)
+            v = float(c.get("volume") or c.get("vol") or c.get("v") or 0.0)
             sanitized.append({
                 "time": int(t) if t else int(time.time()),
                 "open": o, "high": h, "low": l, "close": cl, "volume": v,
@@ -634,6 +716,7 @@ class KronosBot:
             "next_market_switch": get_next_market_switch(),
             "last_signal_time": self.last_signal_time.strftime("%Y-%m-%d %H:%M:%S") if self.last_signal_time else None,
             "token_set": bool(self.olymp_token),
+            "trade_amount": getattr(self, "trade_amount", 70.0),
             "updated_at": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
         }
         return self.status
@@ -736,6 +819,20 @@ class KronosBot:
             self.update_status(market)
             return
 
+        # --- Candle pre-filter: skip Kronos on flat/choppy markets -----------
+        should_call, prefilter_reason = self._candle_prefilter(candles, symbol)
+        if not should_call:
+            self.current_signal = "HOLD"
+            self.log(symbol, f"Pre-filter: skipping Kronos API — {prefilter_reason}")
+            self.log_event("PREDICTION",
+                           f"Kronos skipped — flat market ({prefilter_reason})",
+                           {"symbol": symbol, "signal": "HOLD",
+                            "trade_placed": False, "prefilter": True})
+            self.update_status(market)
+            return
+
+        self.log(symbol, f"Pre-filter passed ({prefilter_reason}) — calling Kronos")
+
         # --- Kronos prediction (UP/DOWN + 0-1 confidence) ---------------------
         prediction = self.call_kronos_api(candles, symbol)
         if prediction is None:
@@ -815,11 +912,10 @@ class KronosBot:
                 self._open_trade_id = self.record_trade(symbol, signal, confidence, entry_price)
                 self.log_event("TRADE_FAILED", f"Execution failed: {err}", {"symbol": symbol, "error": err})
         else:
-            self._open_trade_id = self.record_trade(symbol, signal, confidence, entry_price)
-            self.log(symbol, f"Trade prepared (simulated): {symbol} {signal} amount=${trade_amount:g} mode={'DEMO' if self.demo_mode else 'REAL'}")
-            self.log_event("TRADE", f"Trade prepared: {symbol} {signal} amount=${trade_amount:g}",
+            self.log(symbol, f"AUTO_EXECUTE_TRADES is off — live order not sent ({symbol} {signal})")
+            self.log_event("PREDICTION", f"Prediction {signal} not executed (auto-execute off)",
                            {"symbol": symbol, "signal": signal, "confidence": round(confidence, 4),
-                            "entry_price": entry_price})
+                            "trade_placed": False, "entry_price": entry_price})
 
         if self._open_trade_id is None:
             self.log(symbol, "WARNING: trade not saved to trades table (DB unavailable or offline)")

@@ -52,6 +52,11 @@
         <div class="stat-value" id="stat-winrate">—</div>
       </div>
       <div class="stat-card">
+        <div class="stat-label">Trade Stake</div>
+        <div class="stat-value" id="stat-trade-amount">$70</div>
+        <div class="stat-sub">Per trade stake</div>
+      </div>
+      <div class="stat-card">
         <div class="stat-label">Next Switch</div>
         <div class="stat-value" id="stat-next-switch">—</div>
         <div class="stat-sub" id="stat-countdown"></div>
@@ -66,6 +71,7 @@
         <button id="btn-stop" class="btn btn-danger">■ STOP</button>
         <button id="btn-demo" class="btn btn-secondary">DEMO</button>
         <button id="btn-real" class="btn btn-secondary">REAL</button>
+        <button id="btn-force-trade" class="btn btn-trade">⚡ FORCE TRADE</button>
         <button id="btn-forcestop" class="btn btn-danger-outline">⛔ FORCE STOP</button>
       </div>
 
@@ -74,6 +80,53 @@
         Click ▶ START to approve resumption.
       </div>
 
+      <!-- Trade Amount Control -->
+      <div class="control-box">
+        <div class="control-box-header">
+          <div class="control-box-title">
+            <span>💰 Trade Amount (Stake)</span>
+            <span class="control-badge-highlight">Active: <b id="current-trade-amount">$70</b></span>
+          </div>
+          <div class="control-box-desc">Choose a quick amount or enter a custom stake. Requires PIN.</div>
+        </div>
+        <div class="trade-amount-row">
+          <div class="quick-amounts" id="quick-amounts-group">
+            <button type="button" class="btn btn-amount" data-amount="20">$20</button>
+            <button type="button" class="btn btn-amount" data-amount="30">$30</button>
+            <button type="button" class="btn btn-amount" data-amount="40">$40</button>
+          </div>
+          <div class="input-group custom-amount-group">
+            <span class="input-addon">$</span>
+            <input type="number" id="trade-amount-input" placeholder="Custom amount" min="1" max="10000" step="1">
+            <button id="btn-set-trade-amount" class="btn btn-secondary">Set Amount</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Olymp Trade Web Token Control -->
+      <div class="control-box">
+        <div class="control-box-header">
+          <div class="control-box-title">
+            <span>🔑 Olymp Trade Web Token</span>
+            <div class="token-status-wrapper">
+              <span id="token-status-badge" class="badge badge-token-missing">⚠️ Not Set</span>
+              <code id="token-preview" class="token-preview-code">—</code>
+            </div>
+          </div>
+          <div class="control-box-desc">
+            Update your Olymp Trade access token securely. In Chrome: DevTools (F12) → Network (WS/Fetch) → copy <code>access_token</code>.
+          </div>
+        </div>
+        <div class="token-action-row">
+          <div class="token-input-wrapper">
+            <input type="password" id="token-input" placeholder="Paste Olymp web token (JWT or access_token)..." autocomplete="off">
+            <button type="button" id="btn-toggle-token-eye" class="btn-token-eye" title="Show/Hide Token">👁️</button>
+          </div>
+          <button id="btn-set-token" class="btn btn-secondary">Update Token</button>
+        </div>
+      </div>
+
+      <!-- Daily Target Controls -->
       <div class="controls-row">
         <div class="toggle-wrap">
           <label class="switch">
@@ -83,15 +136,48 @@
           </label>
         </div>
         <div class="input-group">
+          <span class="input-addon">$</span>
           <input type="number" id="target-amount" placeholder="Target $ amount" min="1" step="1">
           <button id="btn-set-target" class="btn btn-secondary">Set Target</button>
         </div>
-        <div class="input-group">
-          <input type="text" id="token-input" placeholder="New Olymp token">
-          <button id="btn-set-token" class="btn btn-secondary">Update Token</button>
-        </div>
       </div>
       <div id="control-msg" class="action-msg"></div>
+    </section>
+
+    <!-- ======================= SYSTEM STATUS ======================= -->
+    <section class="panel">
+      <h2>System Status
+        <button id="btn-health-refresh" class="btn btn-secondary btn-sm" title="Re-test all services now">↻ Re-test</button>
+      </h2>
+      <div class="health-grid">
+        <div class="health-card">
+          <div class="health-header">
+            <span id="health-supabase-dot" class="health-dot unknown"></span>
+            <span class="health-name">🗄️ Supabase Database</span>
+          </div>
+          <div id="health-supabase-detail" class="health-detail">Checking…</div>
+          <div id="health-supabase-time" class="health-time"></div>
+        </div>
+        <div class="health-card">
+          <div class="health-header">
+            <span id="health-kronos-dot" class="health-dot unknown"></span>
+            <span class="health-name">🧠 Kronos AI API</span>
+          </div>
+          <div id="health-kronos-detail" class="health-detail">Checking…</div>
+          <div id="health-kronos-time" class="health-time"></div>
+        </div>
+        <div class="health-card">
+          <div class="health-header">
+            <span id="health-olymp-dot" class="health-dot unknown"></span>
+            <span class="health-name">🔑 Olymp Trade Token</span>
+          </div>
+          <div id="health-olymp-detail" class="health-detail">Checking…</div>
+          <div id="health-olymp-time" class="health-time"></div>
+        </div>
+      </div>
+      <div class="health-note">
+        Auto re-test: Supabase &amp; Kronos every 60s · Olymp websocket every 10 min · automatically re-tests when a new token is saved
+      </div>
     </section>
 
     <div class="two-col">

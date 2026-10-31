@@ -107,7 +107,7 @@ def predict(candles, pred_len=24, symbol=None):
         h = float(c.get("high") or c.get("h") or o)
         l = float(c.get("low") or c.get("l") or o)
         cl = float(c.get("close") or c.get("c") or o)
-        v = float(c.get("volume") or c.get("vol") or c.get("v") or 100.0)
+        v = float(c.get("volume") or c.get("vol") or c.get("v") or 0.0)
         sanitized.append({
             "time": int(t) if t else int(time.time()),
             "open": o,
@@ -160,35 +160,24 @@ def predict(candles, pred_len=24, symbol=None):
     }
 
 
-def is_healthy():
+def is_healthy(timeout=None):
     """True when the Kronos Modal API answers GET /health. Never raises."""
     try:
-        resp = requests.get(_base_url() + "/health", timeout=_timeout())
+        resp = requests.get(_base_url() + "/health", timeout=timeout or _timeout())
         return resp.status_code == 200
     except Exception:  # noqa: BLE001
         return False
 
 
 # ---------------------------------------------------------------------------
-# CLI self-test: python3 -m adapters.kronos_adapter
+# Live check: python3 -m adapters.kronos_adapter
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    from datetime import datetime, timedelta
-    import random
-
-    now = datetime.now().replace(second=0, microsecond=0)
-    price = 1.0850
-    demo_candles = []
-    for i in range(60, 0, -1):
-        o = price
-        c = o + random.gauss(0, 0.0004)
-        demo_candles.append({
-            "time": int((now - timedelta(seconds=60 * i)).timestamp()),
-            "open": round(o, 5), "high": round(max(o, c) + 0.0002, 5),
-            "low": round(min(o, c) - 0.0002, 5), "close": round(c, 5),
-            "volume": round(random.uniform(100, 1000), 2),
-        })
-        price = c
+    from adapters.olymp_adapter import get_candles
 
     print("health:", is_healthy())
-    print("predict:", predict(demo_candles, pred_len=24, symbol="EURUSD"))
+    candles = get_candles("EURUSD_OTC", lookback=400, size=300)
+    if isinstance(candles, dict) and "error" in candles:
+        print("predict skipped — live candles unavailable:", candles["error"])
+    else:
+        print("predict:", predict(candles, pred_len=24, symbol="EURUSD_OTC"))

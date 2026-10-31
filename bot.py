@@ -74,7 +74,7 @@ DEFAULT_PAUSE_CONSECUTIVE_LOSSES = 3  # how many consecutive losses trigger a pa
 
 MAX_API_RETRIES = 3                  # retries for timeouts / connection errors
 RETRY_DELAY = 5                      # seconds between retries (multiplied by attempt)
-API_TIMEOUT = int(os.getenv("KRONOS_TIMEOUT", "60"))  # seconds per HTTP request (allows Modal cold-start)
+API_TIMEOUT = int(os.getenv("KRONOS_TIMEOUT", "90"))  # seconds per HTTP request (allows Modal cold-start)
 OLYMP_CONNECT_TIMEOUT = 15           # seconds for WS connect / candle fetch
 
 # --- Candle pre-filter (skips Kronos call on flat/low-volatility markets) ----
@@ -580,24 +580,30 @@ class KronosBot:
         payload = {"symbol": symbol, "timeframe": "5m", "candles": sanitized}
         headers = {"Content-Type": "application/json"}
 
+        self._last_api_error = None
         for attempt in range(1, MAX_API_RETRIES + 1):
             try:
                 resp = requests.post(url, json=payload, headers=headers, timeout=API_TIMEOUT)
                 resp.raise_for_status()
                 parsed = self._parse_prediction(resp.json())
                 if parsed is None:
+                    self._last_api_error = f"Unexpected payload: {str(resp.text)[:200]}"
                     self.log(symbol, f"Kronos API returned unexpected payload: {str(resp.text)[:200]}")
                     return None
                 return parsed
             except (requests.Timeout, requests.ConnectionError) as e:
+                self._last_api_error = f"Network/timeout error: {e}"
                 self.log(symbol, f"Kronos API network error (attempt {attempt}/{MAX_API_RETRIES}): {e}")
             except requests.HTTPError as e:
+                self._last_api_error = f"HTTP {getattr(e.response, 'status_code', '?')}: {getattr(e.response, 'text', '')[:200]}"
                 self.log(symbol, f"Kronos API HTTP error (attempt {attempt}/{MAX_API_RETRIES}): "
                                  f"{e.response.status_code} {e.response.text[:200]}")
             except json.JSONDecodeError as e:
+                self._last_api_error = f"Invalid JSON: {e}"
                 self.log(symbol, f"Kronos API returned invalid JSON: {e}")
                 return None
             except Exception as e:
+                self._last_api_error = f"Unexpected error: {e}"
                 self.log(symbol, f"Kronos API unexpected error (attempt {attempt}/{MAX_API_RETRIES}): {e}")
             if attempt < MAX_API_RETRIES:
                 time.sleep(RETRY_DELAY * attempt)

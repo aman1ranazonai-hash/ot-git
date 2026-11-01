@@ -122,9 +122,10 @@ MAX_PIN_ATTEMPTS = 3         # wrong attempts before lockout
 PIN_LOCKOUT_SECONDS = 300    # 5 minutes
 
 # Settings editable from the settings page (synced to Supabase database)
-KRONOS_CONFIDENCE_THRESHOLD = 0.75  # fixed: trade only when confidence > 0.75
+KRONOS_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE", os.getenv("KRONOS_CONFIDENCE_THRESHOLD", "0.0")))
 EDITABLE_SETTINGS = [
     ("TRADE_AMOUNT", "Trade Stake Amount ($)", "number"),
+    ("MIN_CONFIDENCE", "Min Confidence (0.0 = trade all)", "number"),
     ("OLYMP_TOKEN", "Olymp Trade Web Access Token", "password"),
     ("KRONOS_API_URL", "Kronos API URL", "text"),
     ("LOOP_INTERVAL", "Loop interval (seconds)", "number"),

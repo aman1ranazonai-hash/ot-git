@@ -131,13 +131,11 @@ def predict_kronos(candles_list: list):
         down_prob = 1.0 - up_prob
         conf = max(up_prob, down_prob)
 
-        # Determine signal
-        if up_prob > 0.6 and up_prob > down_prob:
+        # Determine signal (trade every prediction by dominant direction)
+        if up_prob >= down_prob:
             signal = 'BUY'
-        elif down_prob > 0.6 and down_prob > up_prob:
-            signal = 'SELL'
         else:
-            signal = 'HOLD'
+            signal = 'SELL'
 
         return {
             'up_probability': float(up_prob),

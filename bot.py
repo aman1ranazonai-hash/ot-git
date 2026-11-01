@@ -59,8 +59,8 @@ from config.market_schedule import (
 # ---------------------------------------------------------------------------
 DEFAULT_KRONOS_API_URL = "https://aman1-ranazonai--kronos-trading-api-fastapi-app.modal.run"
 DEFAULT_PIN = "2003"
-DEFAULT_MIN_CONFIDENCE = 0.65        # legacy .env knob (unused for the fixed 0.75 gate)
-KRONOS_CONFIDENCE_THRESHOLD = 0.75   # fixed: trade only when confidence > 0.75
+DEFAULT_MIN_CONFIDENCE = 0.0        # trade every trade by default (0.0 threshold)
+KRONOS_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE", os.getenv("KRONOS_CONFIDENCE_THRESHOLD", "0.0")))
 KRONOS_CANDLE_COUNT = 400            # candles sent to the Kronos API each cycle
 DEFAULT_LOOP_INTERVAL = 300          # 5 minutes between cycles
 DEFAULT_TRADE_AMOUNT = 70.0          # Olymp Trade app amount (fallback)
@@ -179,8 +179,8 @@ class KronosBot:
         self.last_signal_time = None
         self.status = {}
 
-        # Kronos-only decisioning: fixed 0.75 threshold
-        self.optimal_threshold = KRONOS_CONFIDENCE_THRESHOLD
+        # Kronos decisioning: trade every trade by default (threshold overridable via MIN_CONFIDENCE)
+        self.optimal_threshold = self.min_confidence
 
         # Consecutive loss counter (for optional pause-after-loss)
         self._consecutive_losses = 0
@@ -430,7 +430,15 @@ class KronosBot:
         else:
             self.daily_target = _env_float("DAILY_TARGET", self.daily_target)
 
-        self.min_confidence = _env_float("MIN_CONFIDENCE", self.min_confidence)
+        db_conf = get_setting("MIN_CONFIDENCE")
+        if db_conf is not None:
+            try:
+                self.min_confidence = float(db_conf)
+            except ValueError:
+                pass
+        else:
+            self.min_confidence = _env_float("MIN_CONFIDENCE", self.min_confidence)
+        self.optimal_threshold = self.min_confidence
         self.auto_execute_trades = _env_bool("AUTO_EXECUTE_TRADES", getattr(self, "auto_execute_trades", True))
         new = (self.demo_mode, self.force_stop, self.daily_target_enabled,
                self.olymp_token, self.daily_target, self.auto_execute_trades,
@@ -551,11 +559,28 @@ class KronosBot:
         else:
             signal = "HOLD"
 
+        up_prob = data.get("up_probability")
+        down_prob = data.get("down_probability")
+        if up_prob is not None and down_prob is not None:
+            try:
+                up_f = float(up_prob)
+                down_f = float(down_prob)
+                # If signal was HOLD or unspecified, resolve direction from probabilities
+                if signal == "HOLD":
+                    signal = "BUY" if up_f >= down_f else "SELL"
+            except (TypeError, ValueError):
+                pass
+
         conf = data.get("confidence", data.get("probability", data.get("prob", 0)))
         try:
             conf = float(conf)
         except (TypeError, ValueError):
             conf = 0.0
+        if conf == 0.0 and up_prob is not None and down_prob is not None:
+            try:
+                conf = max(float(up_prob), float(down_prob))
+            except (TypeError, ValueError):
+                pass
         if conf > 1.0:  # normalize 0-100 responses to 0-1
             conf = conf / 100.0
         return {"signal": signal, "confidence": conf, "raw": data}
@@ -738,7 +763,7 @@ class KronosBot:
             "symbol": market["symbol"] if market else None,
             "signal": self.current_signal,
             "confidence": round(self.current_confidence, 4),
-            "optimal_threshold": round(getattr(self, "optimal_threshold", 0.75), 4),
+            "optimal_threshold": round(getattr(self, "optimal_threshold", 0.0), 4),
             "daily_pnl": round(self.daily_pnl, 2),
             "trades_today": len(trades_today_rows),
             "wins": wins,
@@ -779,7 +804,7 @@ class KronosBot:
             self.log(None, f"CURRENT  : none — outside market hours, next window {get_next_market_switch()} IST")
         self.log(None, f"Daily target: {'ENABLED ($%s)' % self.daily_target if self.daily_target_enabled else 'disabled — trading all day'}")
         self.log(None, f"Force stop  : {self.force_stop} | Olymp token: {'set' if self.olymp_token else 'not set'}")
-        self.log(None, f"AI Agent    : disabled — Kronos-only decisioning (fixed threshold {KRONOS_CONFIDENCE_THRESHOLD:.2f})")
+        self.log(None, f"AI Decision : Trade every signal (threshold {self.optimal_threshold:.2f})")
         self.log(None, f"Execution   : {'LIVE AUTO-EXECUTE (Olymp)' if getattr(self, 'auto_execute_trades', True) else 'SIMULATION ONLY'}")
         self.log(None, "=" * 60)
 
@@ -911,13 +936,24 @@ class KronosBot:
             self.update_status(market)
             return
 
-        # --- Kronos-only decision gate: confidence > 0.75 ------------------------
-        if confidence <= KRONOS_CONFIDENCE_THRESHOLD or signal == "HOLD":
+        # --- Decision gate: trade every trade (threshold gate only if > 0.0) ---
+        threshold = getattr(self, "optimal_threshold", 0.0)
+        if signal == "HOLD":
+            self.current_signal = "HOLD"
+            self.log(symbol, f"Prediction skipped: signal is HOLD (no directional bias) — no trade")
+            self.log_event("PREDICTION", f"Prediction HOLD for {symbol} — no directional bias",
+                           {"symbol": symbol, "signal": "HOLD", "prediction": "HOLD",
+                            "confidence": round(confidence, 4), "trade_placed": False,
+                            "entry_price": entry_price})
+            self.update_status(market)
+            return
+
+        if threshold > 0.0 and confidence < threshold:
             self.current_signal = "HOLD"
             self.log(symbol, f"Prediction skipped: confidence {confidence:.2f} below "
-                             f"{KRONOS_CONFIDENCE_THRESHOLD:.2f} threshold")
+                             f"{threshold:.2f} threshold")
             self.log(symbol, f"Signal: {signal} | Confidence: {confidence * 100:.0f}% "
-                             f"(not above {KRONOS_CONFIDENCE_THRESHOLD * 100:.0f}%) — no trade")
+                             f"(not above {threshold * 100:.0f}%) — no trade")
             self.log_event("PREDICTION", f"Prediction {signal} for {symbol} — confidence below threshold",
                            {"symbol": symbol, "signal": signal, "prediction": signal,
                             "confidence": round(confidence, 4), "trade_placed": False,
@@ -933,8 +969,8 @@ class KronosBot:
         self.current_signal = signal
         self.last_signal_time = datetime.now(IST)
         pnl_str = self.format_pnl(self.daily_pnl)
-        self.log(symbol, f"Signal: {signal} | Conf: {confidence * 100:.0f}% | "
-                         f"Threshold: {KRONOS_CONFIDENCE_THRESHOLD * 100:.0f}% | Amount: ${trade_amount:g} | P&L: {pnl_str}")
+        self.log(symbol, f"Signal: {signal} | Conf: {confidence * 100:.1f}% | "
+                         f"Amount: ${trade_amount:g} | P&L: {pnl_str}")
         self.log_event("PREDICTION", f"Confirmed {signal} for {symbol}",
                        {"symbol": symbol, "signal": signal, "prediction": signal,
                         "confidence": round(confidence, 4), "trade_placed": True,

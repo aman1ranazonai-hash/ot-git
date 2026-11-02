@@ -167,7 +167,7 @@ Create a `.env` file locally or set these variables in your hosting provider:
 | `DAILY_TARGET_ENABLED`| Automatically pause after reaching daily profit | `false` |
 | `DAILY_TARGET` | Daily profit target in USD | `100.0` |
 | `AUTO_EXECUTE_TRADES` | Place trades automatically on signal | `true` |
-| `TRADE_DURATION` | Digital option expiry duration in seconds | `60` |
+| `TRADE_DURATION` | Digital option expiry duration in seconds | `300` (5 min) |
 | `TRADE_AMOUNT` | Trade stake amount in USD (fallback) | `70` |
 | `LOOP_INTERVAL` | Seconds between trading cycles | `300` (5 min) |
 | `KRONOS_API_URL` | Modal API URL | `https://aman1-ranazonai--kronos-trading-api-fastapi-app.modal.run` |

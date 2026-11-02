@@ -168,7 +168,7 @@ class KronosBot:
 
         # --- Execution Settings (Kronos-only decisioning) -------------------
         self.auto_execute_trades = _env_bool("AUTO_EXECUTE_TRADES", True)
-        self.trade_duration = int(_env_float("TRADE_DURATION", 60))
+        self.trade_duration = int(_env_float("TRADE_DURATION", 300))
 
         # --- Runtime state --------------------------------------------------
         self.daily_pnl = 0.0

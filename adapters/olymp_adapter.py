@@ -23,7 +23,7 @@ Optional .env keys (defaults shown):
   OLYMP_TOKEN        = (no default — real candles/trades need it)
   OLYMP_ACCOUNT_ID   = (auto-detected from the websocket session when omitted)
   DEMO_MODE          = true   -> trades placed with group='demo'
-  TRADE_DURATION     = 60     (seconds; digital options expiry)
+  TRADE_DURATION     = 300    (seconds; digital options expiry)
 """
 
 import os
@@ -219,7 +219,7 @@ def execute_trade(decision, symbol, size=None, direction=None):
     demo_mode = os.getenv("DEMO_MODE", "true").strip().lower() \
         not in ("0", "false", "no", "off")
     group = "demo" if demo_mode else "real"
-    duration = int(float(os.getenv("TRADE_DURATION", "60")))
+    duration = int(float(os.getenv("TRADE_DURATION", "300")))
     amount = float(size) if size is not None and float(size) > 0 else float(get_trade_amount())
 
     async def _run():

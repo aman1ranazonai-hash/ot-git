@@ -88,7 +88,7 @@ All data is stored in **Supabase** (PostgreSQL). Key tables:
 | `OLYMP_ACCOUNT_ID` | Account ID (auto-detected if blank) |
 | `DEMO_MODE` | `true` = demo account, `false` = real money |
 | `TRADE_AMOUNT` | Stake per trade in USD |
-| `TRADE_DURATION` | Option duration in seconds (default 60) |
+| `TRADE_DURATION` | Option duration in seconds (default 300 / 5 min) |
 | `KRONOS_API_URL` | Kronos Modal AI API URL |
 | `LOOP_INTERVAL` | Bot cycle interval in seconds |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from @BotFather |

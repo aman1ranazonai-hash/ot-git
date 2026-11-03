@@ -51,10 +51,10 @@ final ot/
 
 ## Decision & Execution Flow
 
-Every **5 minutes** during active market sessions:
+Every **2 minutes** during active market sessions:
 
 1. **Market Verification**: Confirms current time falls within active IST market windows (European EURUSD/GBPUSD, US USDJPY, or Asian AUDUSD).
-2. **Live Candle Ingestion**: Fetches 400 real OHLCV candles directly from the Olymp Trade WebSocket client. (No synthetic/dummy candle fallbacks — cycles skip cleanly if live data is unavailable).
+2. **Live Candle Ingestion**: Fetches 500 real 2-minute OHLCV candles directly from the Olymp Trade WebSocket client. (No synthetic/dummy candle fallbacks — cycles skip cleanly if live data is unavailable).
 3. **Kronos Inference**: Sends recent candle data to the Kronos Modal API endpoint (`https://aman1-ranazonai--kronos-trading-api-fastapi-app.modal.run`).
 4. **Confidence Evaluation**:
    - **Confidence > 0.70**: Checks risk controls, determines trade size from Olymp Trade settings (defaulting to 70), executes the order on Olymp Trade, and records the open trade in Supabase.
@@ -84,7 +84,7 @@ All runtime state, trades, command audits, and events are stored **directly in S
                                         ▼
                       ┌────────────────────────────────────┐
                       │    Olymp Trade WebSocket Client    │
-                      │       400 Live OHLCV Candles       │
+                      │     500 Live 2m OHLCV Candles      │
                       └─────────────────┬──────────────────┘
                                         │
                                         ▼
@@ -167,9 +167,9 @@ Create a `.env` file locally or set these variables in your hosting provider:
 | `DAILY_TARGET_ENABLED`| Automatically pause after reaching daily profit | `false` |
 | `DAILY_TARGET` | Daily profit target in USD | `100.0` |
 | `AUTO_EXECUTE_TRADES` | Place trades automatically on signal | `true` |
-| `TRADE_DURATION` | Digital option expiry duration in seconds | `300` (5 min) |
+| `TRADE_DURATION` | Digital option expiry duration in seconds | `120` (2 min) |
 | `TRADE_AMOUNT` | Trade stake amount in USD (fallback) | `70` |
-| `LOOP_INTERVAL` | Seconds between trading cycles | `300` (5 min) |
+| `LOOP_INTERVAL` | Seconds between trading cycles | `120` (2 min) |
 | `KRONOS_API_URL` | Modal API URL | `https://aman1-ranazonai--kronos-trading-api-fastapi-app.modal.run` |
 | `OLYMP_TOKEN` | Olymp Trade session JWT token | `...` |
 | `SUPABASE_URL` | Supabase Project URL | `https://<id>.supabase.co` |

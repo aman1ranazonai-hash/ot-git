@@ -6,7 +6,7 @@ Olymp Trade Adapter
 Wraps the local olymptrade_ws repo (./OT API/olymptrade_ws/) — the same client
 the existing bot.py uses — for candle fetching and trade execution:
 
-    get_candles(symbol, lookback=400, size=60)
+    get_candles(symbol, lookback=500, size=120)
       -> list of OHLCV candle dicts (as returned by the Olymp websocket)
 
     execute_trade(decision, symbol, size=1, direction='BUY')
@@ -23,7 +23,7 @@ Optional .env keys (defaults shown):
   OLYMP_TOKEN        = (no default — real candles/trades need it)
   OLYMP_ACCOUNT_ID   = (auto-detected from the websocket session when omitted)
   DEMO_MODE          = true   -> trades placed with group='demo'
-  TRADE_DURATION     = 300    (seconds; digital options expiry)
+  TRADE_DURATION     = 120    (seconds; digital options expiry)
 """
 
 import os
@@ -92,7 +92,7 @@ def get_olymp_token():
     return ""
 
 
-def get_candles(symbol, lookback=400, size=60):
+def get_candles(symbol, lookback=500, size=120):
     """
     Fetch the last `lookback` OHLCV candles for `symbol` via the
     olymptrade_ws websocket.
@@ -219,7 +219,7 @@ def execute_trade(decision, symbol, size=None, direction=None):
     demo_mode = os.getenv("DEMO_MODE", "true").strip().lower() \
         not in ("0", "false", "no", "off")
     group = "demo" if demo_mode else "real"
-    duration = int(float(os.getenv("TRADE_DURATION", "300")))
+    duration = int(float(os.getenv("TRADE_DURATION", "120")))
     amount = float(size) if size is not None and float(size) > 0 else float(get_trade_amount())
 
     async def _run():
@@ -329,7 +329,7 @@ def force_trade(symbol=None, direction="BUY", amount=None):
 if __name__ == "__main__":
     token = get_olymp_token()
     print("token:", "set" if token else "MISSING")
-    result = get_candles("EURUSD_OTC", lookback=10, size=300)
+    result = get_candles("EURUSD_OTC", lookback=10, size=120)
     if isinstance(result, dict) and "error" in result:
         print(f"candles: error ({result['error']})")
     else:

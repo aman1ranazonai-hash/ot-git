@@ -61,8 +61,8 @@ DEFAULT_KRONOS_API_URL = "https://aman1-ranazonai--kronos-trading-api-fastapi-ap
 DEFAULT_PIN = "2003"
 DEFAULT_MIN_CONFIDENCE = 0.0        # trade every trade by default (0.0 threshold)
 KRONOS_CONFIDENCE_THRESHOLD = float(os.getenv("MIN_CONFIDENCE", os.getenv("KRONOS_CONFIDENCE_THRESHOLD", "0.0")))
-KRONOS_CANDLE_COUNT = 400            # candles sent to the Kronos API each cycle
-DEFAULT_LOOP_INTERVAL = 300          # 5 minutes between cycles
+KRONOS_CANDLE_COUNT = 500            # candles sent to the Kronos API each cycle
+DEFAULT_LOOP_INTERVAL = 120          # 2 minutes between cycles
 DEFAULT_TRADE_AMOUNT = 70.0          # Olymp Trade app amount (fallback)
 DEFAULT_DAILY_TARGET = 100.0
 
@@ -84,7 +84,7 @@ OLYMP_CONNECT_TIMEOUT = 15           # seconds for WS connect / candle fetch
 #   - OR range as % of price                      must exceed PREFILTER_RANGE_PCT
 # Either condition passing = market is moving = call Kronos.
 # Both failing = market is flat = skip Kronos, save the API token.
-PREFILTER_LOOKBACK   = 6            # look at last 6 candles (30 min of 5m data)
+PREFILTER_LOOKBACK   = 6            # look at last 6 candles (12 min of 2m data)
 PREFILTER_BODY_RATIO = 0.25         # candle body must be ≥25% of its wick range
 PREFILTER_RANGE_PCT  = 0.0008       # or high-low spread ≥0.08% of price
 
@@ -168,7 +168,7 @@ class KronosBot:
 
         # --- Execution Settings (Kronos-only decisioning) -------------------
         self.auto_execute_trades = _env_bool("AUTO_EXECUTE_TRADES", True)
-        self.trade_duration = int(_env_float("TRADE_DURATION", 300))
+        self.trade_duration = int(_env_float("TRADE_DURATION", 120))
 
         # --- Runtime state --------------------------------------------------
         self.daily_pnl = 0.0
@@ -477,17 +477,17 @@ class KronosBot:
     # ------------------------------------------------------------------
     # Candle data
     # ------------------------------------------------------------------
-    def _fetch_candles_olymp(self, symbol, count=60, size=300):
+    def _fetch_candles_olymp(self, symbol, count=60, size=120):
         """Fetch real candles via the olymptrade_ws client (async).
 
-        size is the candle length in SECONDS: 300 == 5-minute candles only.
+        size is the candle length in SECONDS: 120 == 2-minute candles.
         """
         res = get_candles(symbol, lookback=count, size=size)
         if isinstance(res, dict) and "error" in res:
             raise RuntimeError(res["error"])
         return res
 
-    def fetch_candles(self, symbol, count=60, size=300):
+    def fetch_candles(self, symbol, count=60, size=120):
         """Fetch live candles from Olymp Trade. Returns None on failure (never raises)."""
         if not self.olymp_token:
             self.log(symbol, "ERROR: OLYMP_TOKEN not set — cannot fetch candles")
@@ -602,7 +602,7 @@ class KronosBot:
                 "time": int(t) if t else int(time.time()),
                 "open": o, "high": h, "low": l, "close": cl, "volume": v,
             })
-        payload = {"symbol": symbol, "timeframe": "5m", "candles": sanitized}
+        payload = {"symbol": symbol, "timeframe": "2m", "candles": sanitized}
         headers = {"Content-Type": "application/json"}
 
         self._last_api_error = None
@@ -874,9 +874,9 @@ class KronosBot:
 
         symbol = market["symbol"]
 
-        # --- Fetch 5m candles (spec: 400 x 5-minute candles every cycle) ------
+        # --- Fetch 2m candles (500 x 2-minute candles every cycle) ------
         current_time = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-        self.log(symbol, f"Fetching 5m candle for {symbol} at {current_time}")
+        self.log(symbol, f"Fetching 2m candle for {symbol} at {current_time}")
         try:
             candles = self.fetch_candles(symbol, count=KRONOS_CANDLE_COUNT)
         except Exception as e:

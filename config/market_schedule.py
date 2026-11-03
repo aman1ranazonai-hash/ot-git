@@ -1,14 +1,14 @@
 # Trading Schedule: Monday-Friday, IST timezone
 # Weekends (Sat/Sun) are automatically skipped by is_trading_day() check in bot.py
-# All trades use 5-minute candles only ("timeframe": "5m")
+# All trades use 2-minute candles only ("timeframe": "2m")
 from datetime import datetime
 import pytz
 
 # India timezone
 IST = pytz.timezone('Asia/Kolkata')
 
-# Candles used everywhere: 5-minute charts (Olymp websocket size = 300 seconds)
-TIMEFRAME = "5m"
+# Candles used everywhere: 2-minute charts (Olymp websocket size = 120 seconds)
+TIMEFRAME = "2m"
 
 MARKET_SCHEDULE = [
     {
@@ -16,7 +16,7 @@ MARKET_SCHEDULE = [
         'symbol': 'EURUSD_OTC',   # Olymp requires _OTC suffix for forex digital options
         'start_time': '09:00',
         'end_time': '11:00',
-        'timeframe': '5m',              # 5-min candles only — no 1m/15m anywhere
+        'timeframe': '2m',              # 2-min candles only
         'min_confidence': 0.65,
         'description': 'European open'
     },
@@ -25,7 +25,7 @@ MARKET_SCHEDULE = [
         'symbol': 'GBPUSD_OTC',
         'start_time': '11:00',
         'end_time': '14:00',
-        'timeframe': '5m',
+        'timeframe': '2m',
         'min_confidence': 0.65,
         'description': 'UK market active'
     },
@@ -34,7 +34,7 @@ MARKET_SCHEDULE = [
         'symbol': 'USDJPY_OTC',
         'start_time': '14:00',
         'end_time': '17:00',
-        'timeframe': '5m',
+        'timeframe': '2m',
         'min_confidence': 0.65,
         'description': 'Tokyo/London overlap'
     },
@@ -43,7 +43,7 @@ MARKET_SCHEDULE = [
         'symbol': 'AUDUSD_OTC',
         'start_time': '17:00',
         'end_time': '21:00',
-        'timeframe': '5m',
+        'timeframe': '2m',
         'min_confidence': 0.65,
         'description': 'Asian session'
     }

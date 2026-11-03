@@ -296,7 +296,7 @@ def _check_olymp(now, token_sig):
         return {"ok": False, "token_set": False, "token_sig": "",
                 "detail": "No token configured — paste your Olymp Trade token",
                 "ts": now, "checked_at": datetime.now(IST).strftime("%H:%M:%S")}
-    res = get_candles("EURUSD_OTC", lookback=5, size=300)
+    res = get_candles("EURUSD_OTC", lookback=5, size=120)
     if isinstance(res, dict) and "error" in res:
         return {"ok": False, "token_set": True, "token_sig": token_sig,
                 "detail": f"Connection failed: {res['error']}",

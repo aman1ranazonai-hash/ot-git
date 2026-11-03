@@ -176,7 +176,7 @@ if __name__ == "__main__":
     from adapters.olymp_adapter import get_candles
 
     print("health:", is_healthy())
-    candles = get_candles("EURUSD_OTC", lookback=400, size=300)
+    candles = get_candles("EURUSD_OTC", lookback=500, size=120)
     if isinstance(candles, dict) and "error" in candles:
         print("predict skipped — live candles unavailable:", candles["error"])
     else:

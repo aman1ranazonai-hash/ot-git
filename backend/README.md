@@ -37,7 +37,7 @@ OT API/
 ## What each piece does
 
 ### `bot.py` — Trading Loop
-- Runs on a configurable `LOOP_INTERVAL` (default 300 s)
+- Runs on a configurable `LOOP_INTERVAL` (default 120 s / 2 min)
 - Reads market schedule → fetches candles → calls Kronos API → executes trade
 - Writes all events to Supabase via `database/db.py`
 - Reads `FORCE_STOP` / `DEMO_MODE` from `.env` and DB settings
@@ -88,7 +88,7 @@ All data is stored in **Supabase** (PostgreSQL). Key tables:
 | `OLYMP_ACCOUNT_ID` | Account ID (auto-detected if blank) |
 | `DEMO_MODE` | `true` = demo account, `false` = real money |
 | `TRADE_AMOUNT` | Stake per trade in USD |
-| `TRADE_DURATION` | Option duration in seconds (default 300 / 5 min) |
+| `TRADE_DURATION` | Option duration in seconds (default 120 / 2 min) |
 | `KRONOS_API_URL` | Kronos Modal AI API URL |
 | `LOOP_INTERVAL` | Bot cycle interval in seconds |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from @BotFather |
